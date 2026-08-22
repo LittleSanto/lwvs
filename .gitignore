@@ -1,0 +1,44 @@
+# Captures, base et exports contiennent les pseudos et les identifiants de
+# ~200 joueurs reels. Rien de tout ca ne doit partir dans un depot.
+*.pcap
+*.pcapng
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+lwvs.sqlite3*
+captures/
+payloads/
+exports/
+*.bin
+manifest.tsv
+# Blanket volontaire : les seuls .csv/.json que ce projet produit sont des
+# exports contenant des donnees joueur. Ajoute une exception explicite si un
+# fichier de config doit un jour etre versionne.
+*.csv
+*.json
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.coverage
+htmlcov/
+
+# Editeurs
+.vscode/
+.idea/
+*.gui.json
+
+# Hors depot PUBLIC par choix : ces fichiers vivent dans le depot PRIVE
+# lwvs-notes, dont le git-dir est .notes.git et l'arbre de travail est ce
+# repertoire-ci. Les memes fichiers, deux depots -- pas de copie, donc pas de
+# derive possible entre les deux.
+CLAUDE.md
+/tests/
+.notes.git/
+notes.ps1

@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lwvs"
+version = "0.1.0"
+description = "Decodeur du classement Alliance Duel (VS) de Last War: Survival"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["zstandard>=0.21"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+# Outil de FABRICATION du .exe, jamais embarque dedans : la regle « une seule
+# dependance a l'execution » (zstandard) reste entiere.
+packaging = ["pyinstaller>=6"]
+
+[project.scripts]
+lwvs = "lwvs.cli:main"
+lwvs-gui = "lwvs.gui:main"
+
+[tool.setuptools.packages.find]
+include = ["lwvs*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["error"]
