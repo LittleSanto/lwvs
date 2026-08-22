@@ -1,0 +1,67 @@
+lwvs - capture des classements de Last War: Survival
+====================================================
+
+AVANT TOUT : installer Wireshark
+--------------------------------
+lwvs ne renifle pas le reseau lui-meme, il delegue a tshark, fourni par
+Wireshark. Sans Wireshark, lwvs demarre mais ne peut rien capturer et te le
+dira en haut de sa fenetre.
+
+  1. Telecharge Wireshark : https://www.wireshark.org/download.html
+  2. Pendant l'installation, LAISSE COCHE l'installation de Npcap.
+  3. L'installateur de Npcap propose une case
+     << Restrict Npcap driver's access to Administrators only >>.
+     NE LA COCHE PAS. Cochee, aucune interface ne verra le moindre paquet
+     tant que lwvs n'est pas lance en administrateur.
+  4. Redemarre le PC si Npcap le demande.
+
+Lancer lwvs
+-----------
+Double-clique lwvs.exe (dans ce dossier).
+
+Windows affichera peut-etre << Windows a protege votre ordinateur >>. C'est
+SmartScreen : le programme n'est pas signe par un editeur connu, pas un
+diagnostic de danger. Clique << Informations complementaires >> puis
+<< Executer quand meme >>.
+
+Si ton antivirus met lwvs.exe en quarantaine, c'est un faux positif du meme
+ordre (un programme non signe, qui ecoute le reseau). Il faut l'autoriser
+explicitement.
+
+Utilisation
+-----------
+  1. Lance Last War.
+  2. Dans lwvs : << Detecter >>. Laisse le jeu ouvert : la detection s'arrete
+     des qu'une trame du jeu est reconnue.
+  3. << Demarrer la capture >>.
+  4. Dans le jeu, ouvre les ecrans de classement voulus (VS, membres,
+     classement serveur...). Chaque ecran ouvert = un classement recupere.
+     Un ecran deja ouvert doit etre RECHARGE (ferme puis rouvert).
+  5. << Arreter >>, puis << Exporter >> ou << Envoyer maintenant >>.
+
+Le garde-fou affiche en bas doit rester a ~100 %. En dessous, le decodage rate
+une partie de ce qui passe : signale-le.
+
+Ce que lwvs ecrit sur ton disque
+--------------------------------
+Rien dans ce dossier. Tout va dans :
+  %LOCALAPPDATA%\lwvs\
+  - lwvs.gui.json   tes reglages (interface, port, URL du site)
+  - identity.json   ton alliance, memorisee
+  - lwvs.sqlite3    UNIQUEMENT si tu coches << conserver l'historique >>
+
+Par defaut aucun historique n'est conserve : la base de travail est un fichier
+temporaire efface a la fermeture.
+
+Vie privee
+----------
+Un export contient les pseudos et identifiants de ~200 joueurs reels.
+<< Envoyer maintenant >> les PUBLIE chez un tiers (l'URL indiquee) : ce n'est
+pas la meme chose qu'ecrire un fichier local. Le jeton d'envoi n'est enregistre
+sur le disque que si tu coches explicitement la case.
+
+En cas de probleme
+------------------
+Le numero de version est dans le titre de la fenetre : donne-le.
+Si la fenetre ne s'ouvre pas du tout, un fichier %LOCALAPPDATA%\lwvs\
+lwvs-crash.log a peut-etre ete ecrit.
