@@ -29,6 +29,15 @@ from typing import Callable, Iterable, Iterator, Sequence
 from . import wire
 from .wire import Frame, FrameReader, FrameStats
 
+# Un .exe sans console (PyInstaller, console=False) n'a pas de console a
+# transmettre a ses enfants : chaque tshark.exe s'en creerait une, et la
+# detection en lance un PAR INTERFACE -- une rafale de fenetres noires. Lance
+# depuis un terminal, la console est heritee et rien ne se voit : le defaut
+# n'apparait que dans le binaire empaquete. Chaque lancement passe par ici.
+_QUIET: dict[str, int] = (
+    {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
+)
+
 __all__ = [
     "TsharkNotFound",
     "find_tshark",
@@ -100,7 +109,8 @@ class Interface:
 
 def list_interfaces(tshark: str | None = None) -> list[Interface]:
     exe = find_tshark(tshark)
-    proc = subprocess.run([exe, "-D"], capture_output=True, text=True, errors="replace")
+    proc = subprocess.run([exe, "-D"], capture_output=True, text=True, errors="replace",
+                          **_QUIET)
     out: list[Interface] = []
     for line in proc.stdout.splitlines():
         m = _IFACE_RE.match(line.strip())
@@ -128,7 +138,7 @@ def probe_interfaces(
         proc = subprocess.run(
             [exe, "-i", iface.device, "-n", "-a", f"duration:{seconds}",
              "-q", "-z", "io,stat,0"],
-            capture_output=True, text=True, errors="replace",
+            capture_output=True, text=True, errors="replace", **_QUIET,
         )
         m = re.search(r"(\d+) packets? captured", proc.stdout + proc.stderr)
         if m:
@@ -220,6 +230,7 @@ class _TsharkSource(CaptureSource):
             text=True,
             errors="replace",
             bufsize=1,
+            **_QUIET,
         )
         self._proc = proc
         assert proc.stdout is not None
@@ -645,7 +656,8 @@ def feed_pcap(
     argv = [exe, "-r", str(path), "-n", "-Y", _SCORE_FILTER]
     argv += ["-T", "fields", "-E", "separator=/t", "-E", "occurrence=a"]
     argv += _SCORE_FIELDS
-    proc = subprocess.run(argv, capture_output=True, text=True, errors="replace")
+    proc = subprocess.run(argv, capture_output=True, text=True, errors="replace",
+                          **_QUIET)
     read = 0
     for line in proc.stdout.splitlines():
         if _feed_line(scorer, line):
@@ -687,7 +699,7 @@ def discover_ports(
         cap = subprocess.run(
             [exe, "-i", iface, "-n", "-f", "tcp", "-a", f"duration:{duration}",
              "-w", str(target)],
-            capture_output=True, text=True, errors="replace",
+            capture_output=True, text=True, errors="replace", **_QUIET,
         )
         err = _meaningful_stderr(cap.stderr)
         if err:
@@ -843,7 +855,7 @@ def _watch_iface(
     try:
         proc = subprocess.Popen(
             argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, errors="replace", bufsize=1,
+            text=True, errors="replace", bufsize=1, **_QUIET,
         )
     except OSError as exc:
         return str(exc)[:120]
