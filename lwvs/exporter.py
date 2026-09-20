@@ -130,15 +130,15 @@ def resolve_own_alliance(store: Store, snapshot: int | None = None,
 
     detail = ""
     if known:
-        detail = (f" L'alliance memorisee ({known.label}) n'apparait pas dans"
-                  " cette capture : soit ce n'est pas la bonne, soit le"
-                  " classement n'a pas ete recu.")
+        detail = (f" The remembered alliance ({known.label}) does not appear in"
+                  " this capture: either it is not the right one, or the"
+                  " ranking was not received.")
     raise ValueError(
-        "impossible d'identifier ton alliance."
-        " Ouvre une fois l'ecran Alliance -> Duel (qui envoie"
-        " `get.alliance.duel.season.info` et `get.alliance.duel.group.info`)"
-        " OU la liste des membres (`al.rank`). La reponse sera memorisee pour"
-        " les captures suivantes." + detail
+        "could not identify your alliance."
+        " Open the Alliance -> Duel screen once (it sends"
+        " `get.alliance.duel.season.info` and `get.alliance.duel.group.info`)"
+        " OR the member list (`al.rank`). The answer is remembered for the"
+        " next captures." + detail
     )
 
 
@@ -175,9 +175,9 @@ def collect(
                     abbrs = [known.alliance_abbr]
             if not abbrs:
                 raise ValueError(
-                    "ce classement n'identifie les joueurs que par l'abreviation"
-                    " d'alliance, et la tienne n'est pas connue. Capture une fois"
-                    " l'ecran Duel ou la liste des membres."
+                    "this ranking only identifies players by alliance"
+                    " abbreviation, and yours is not known. Capture the Duel"
+                    " screen or the member list once."
                 )
         rows = store.fetch_camp_rank(abbrs=abbrs, snapshot=snapshot)
     elif dataset == "server":
@@ -340,7 +340,7 @@ class Feed:
 FEEDS: tuple[Feed, ...] = (
     Feed(
         key="kills",
-        label="Kills — roster de l'alliance",
+        label="Kills — alliance roster",
         dataset="members",
         command="al.rank",
         mode="kill_rank",
@@ -350,7 +350,7 @@ FEEDS: tuple[Feed, ...] = (
     ),
     Feed(
         key="dons_semaine",
-        label="Points de don — semaine",
+        label="Donation points — week",
         dataset="members",
         command="al.rank",
         metric="weekly_progress",
@@ -362,7 +362,7 @@ FEEDS: tuple[Feed, ...] = (
     ),
     Feed(
         key="dons_jour",
-        label="Points de don — aujourd'hui",
+        label="Donation points — today",
         dataset="members",
         command="al.rank",
         metric="today_progress",
@@ -373,7 +373,7 @@ FEEDS: tuple[Feed, ...] = (
     ),
     Feed(
         key="thp",
-        label="THP — classement du serveur",
+        label="THP — server ranking",
         dataset="server",
         command="rank.get",
         metric="hero_power",
@@ -386,7 +386,7 @@ FEEDS: tuple[Feed, ...] = (
     ),
     Feed(
         key="camp_battle",
-        label="Classement d'événement (camp battle)",
+        label="Event ranking (camp battle)",
         dataset="camp",
         command="lw.camp.battle.user.score.rank",
         mode="camp_battle_rank",
@@ -396,7 +396,7 @@ FEEDS: tuple[Feed, ...] = (
     ),
     Feed(
         key="vs_total",
-        label="Points VS — cumul du duel",
+        label="VS points — duel total",
         dataset="players",
         command="al.battle.rank.info",
         scope="total",
@@ -405,7 +405,7 @@ FEEDS: tuple[Feed, ...] = (
     ),
     Feed(
         key="vs_day",
-        label="Points VS — par jour",
+        label="VS points — per day",
         dataset="players",
         command="al.battle.rank.info",
         scope="day",

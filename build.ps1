@@ -4,7 +4,7 @@
     Usage :  .\build.ps1
              .\build.ps1 -Clean      (repart de zero)
 
-    Le ZIP contient un dossier lwvs\ avec lwvs.exe et LISEZMOI.txt.
+    Le ZIP contient un dossier lwvs\ avec lwvs.exe et README.txt.
     On distribue un DOSSIER, pas un .exe seul : voir lwvs-gui.spec pour
     pourquoi ce n'est pas du onefile.
 #>
@@ -52,7 +52,7 @@ if ($LASTEXITCODE -ne 0) { throw "PyInstaller a echoue" }
 
 $app = 'dist\lwvs'
 if (-not (Test-Path "$app\lwvs.exe")) { throw "lwvs.exe absent de $app" }
-Copy-Item 'packaging\LISEZMOI.txt' $app -Force
+Copy-Item 'packaging\README.txt' $app -Force
 
 # Sanity : le backend C de zstandard est charge par un import dynamique, donc
 # invisible a l'analyse statique. S'il manque, le .exe demarre puis echoue au

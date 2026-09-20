@@ -39,7 +39,7 @@ from .publish import publish
 from .ingest import ingest
 from .store import DEFAULT_DB, Store
 
-TITLE = f"lwvs {__version__} — capture Last War VS"
+TITLE = f"lwvs {__version__} — Last War VS capture"
 _POLL_MS = 120
 #: Plafond de la detection, pas une duree d'attente : elle s'arrete a la preuve.
 _DETECT_SECONDS = 20
@@ -50,6 +50,11 @@ _MIN_SIZE = (1000, 780)
 
 #: Lien de secours affiche quand tshark manque.
 _WIRESHARK_URL = "https://www.wireshark.org/download.html"
+
+#: `OwnAlliance.source` est une valeur interne (tests et memoire la comparent) :
+#: on ne la traduit qu'a l'affichage.
+_SOURCE_LABELS = {"duel": "Duel screen", "roster": "member list",
+                  "memoire": "memory"}
 
 
 # Le defaut de `store` est RELATIF : lance depuis un raccourci (ou un .exe
@@ -191,8 +196,8 @@ class App:
             value=bool(self.prefs.get("keep", False)) if keep is None else keep)
         self.iface_var = tk.StringVar()
         self.port_var = tk.StringVar(value=str(self.prefs.get("port", "")))
-        self.status_var = tk.StringVar(value="prêt")
-        self.guard_var = tk.StringVar(value="aucune capture pour l'instant")
+        self.status_var = tk.StringVar(value="ready")
+        self.guard_var = tk.StringVar(value="no capture yet")
         self.alliance_var = tk.StringVar(value="")
         self.mine_var = tk.BooleanVar(value=bool(self.prefs.get("mine", True)))
         self.day_var = tk.StringVar(value=str(self.prefs.get("declare_day", "") or ""))
@@ -246,8 +251,8 @@ class App:
         self._build_feeds(right)
         self._build_log(right)
 
-        self._say("les exports JSON sont le livrable ; rien n'est conservé "
-                  "localement sauf si tu coches « conserver l'historique ».")
+        self._say("the JSON exports are the deliverable; nothing is kept "
+                  "locally unless you tick \"Keep history locally\".")
         self._apply_prereq()
 
     def _build_prereq(self, parent: tk.Frame) -> None:
@@ -261,20 +266,20 @@ class App:
                                highlightbackground=pal.warn, highlightcolor=pal.warn)
         inner = tk.Frame(self.prereq, background=pal.surface)
         inner.pack(fill="x", padx=16, pady=12)
-        tk.Label(inner, text="⚠  Wireshark est requis, et il est introuvable",
+        tk.Label(inner, text="⚠  Wireshark is required, and it could not be found",
                  background=pal.surface, foreground=pal.warn,
                  font=fonts.bold).pack(anchor="w")
         theme.label(
             inner, pal, fonts,
-            "lwvs ne renifle pas le réseau lui-même : il délègue à tshark, fourni "
-            "par Wireshark.\n"
-            "Installe Wireshark en laissant Npcap coché, puis relance lwvs.\n"
-            "À l'installation de Npcap, NE COCHE PAS « Restrict Npcap driver's "
-            "access to Administrators only » :\n"
-            "coché, aucune interface ne verra le moindre paquet sans lancer lwvs "
-            "en administrateur.",
+            "lwvs does not sniff the network itself: it delegates to tshark, "
+            "which ships with Wireshark.\n"
+            "Install Wireshark leaving Npcap ticked, then restart lwvs.\n"
+            "When Npcap installs, DO NOT tick \"Restrict Npcap driver's access "
+            "to Administrators only\":\n"
+            "ticked, no interface will see a single packet unless lwvs runs as "
+            "administrator.",
             kind="muted").pack(anchor="w", pady=(6, 10))
-        ttk.Button(inner, text="Ouvrir la page de téléchargement",
+        ttk.Button(inner, text="Open the download page",
                    style="Accent.TButton",
                    command=lambda: webbrowser.open(_WIRESHARK_URL)).pack(anchor="w")
 
@@ -288,7 +293,7 @@ class App:
             btn = getattr(self, name, None)
             if btn is not None:
                 btn.configure(state="disabled")
-        self._status("Wireshark manquant", "err")
+        self._status("Wireshark missing", "err")
 
     def _build_header(self, parent: tk.Frame) -> None:
         pal, fonts = self.pal, self.fonts
@@ -299,7 +304,7 @@ class App:
         left.pack(side="left")
         tk.Label(left, text="lwvs", background=pal.bg, foreground=pal.text,
                  font=fonts.title).pack(side="left")
-        tk.Label(left, text="capture Last War VS", background=pal.bg,
+        tk.Label(left, text="Last War VS capture", background=pal.bg,
                  foreground=pal.muted, font=fonts.small).pack(side="left",
                                                               padx=(10, 0), pady=(6, 0))
 
@@ -308,7 +313,7 @@ class App:
         toggle = ttk.Button(right, text="☀" if pal.dark else "☾", width=3,
                             style="Icon.TButton", command=self._toggle_theme)
         toggle.pack(side="right", padx=(10, 0))
-        theme.Tooltip(toggle, "Basculer clair / sombre", pal, fonts)
+        theme.Tooltip(toggle, "Toggle light / dark", pal, fonts)
 
         # Barre indeterminee : elle ne dit pas « combien », elle dit « ca vit ».
         # Sans elle, une detection de 25 s est indiscernable d'un gel.
@@ -331,9 +336,9 @@ class App:
         body.columnconfigure(0, weight=1)
         body.columnconfigure(1, minsize=90)
 
-        theme.label(body, pal, fonts, "Interface réseau", kind="muted").grid(
+        theme.label(body, pal, fonts, "Network interface", kind="muted").grid(
             row=0, column=0, sticky="w")
-        theme.label(body, pal, fonts, "Port du jeu", kind="muted").grid(
+        theme.label(body, pal, fonts, "Game port", kind="muted").grid(
             row=0, column=1, sticky="w", padx=(10, 0))
         self.iface_box = ttk.Combobox(body, textvariable=self.iface_var,
                                       state="readonly", width=10)
@@ -341,21 +346,21 @@ class App:
         self.iface_box.configure(values=self._iface_values)
         # Le device reste consultable : c'est lui qu'on copie dans un --iface.
         theme.Tooltip(self.iface_box,
-                      lambda: self._iface_device() or "aucune interface", pal, fonts)
+                      lambda: self._iface_device() or "no interface", pal, fonts)
         port_entry = ttk.Entry(body, textvariable=self.port_var, width=8)
         port_entry.grid(row=1, column=1, sticky="we", padx=(10, 0), pady=(3, 0))
 
         # Un seul bouton : interface et port se prouvent par le MEME signal,
         # une trame du jeu qui decode jusqu'a son dernier octet. Les demander
         # separement etait deux attentes a la file pour une seule reponse.
-        self.detect_btn = ttk.Button(body, text="⌖  Détecter",
+        self.detect_btn = ttk.Button(body, text="⌖  Detect",
                                      style="Ghost.TButton", command=self._detect)
         self.detect_btn.grid(row=2, column=0, columnspan=2, sticky="we",
                              pady=(12, 0))
         theme.Tooltip(self.detect_btn,
-                      "Écoute toutes les interfaces à la fois et s'arrête dès\n"
-                      "qu'une trame du jeu est reconnue — quelques secondes si\n"
-                      "le jeu tourne.   ·   F4",
+                      "Listens on every interface at once and stops as soon\n"
+                      "as a game frame is recognised — a few seconds if the\n"
+                      "game is running.   ·   F4",
                       pal, fonts)
 
     def _build_capture(self, parent: tk.Frame) -> None:
@@ -365,14 +370,14 @@ class App:
 
         row = tk.Frame(body, background=pal.surface)
         row.pack(fill="x")
-        self.start_btn = ttk.Button(row, text="▶  Démarrer", style="Accent.TButton",
+        self.start_btn = ttk.Button(row, text="▶  Start", style="Accent.TButton",
                                     command=self._start)
         self.start_btn.pack(side="left")
-        theme.Tooltip(self.start_btn, "Démarrer la capture   ·   F5", pal, fonts)
-        self.stop_btn = ttk.Button(row, text="■  Arrêter", command=self._stop,
+        theme.Tooltip(self.start_btn, "Start capturing   ·   F5", pal, fonts)
+        self.stop_btn = ttk.Button(row, text="■  Stop", command=self._stop,
                                    state="disabled")
         self.stop_btn.pack(side="left", padx=8)
-        theme.Tooltip(self.stop_btn, "Arrêter la capture   ·   F5", pal, fonts)
+        theme.Tooltip(self.stop_btn, "Stop capturing   ·   F5", pal, fonts)
 
         # Le garde-fou est LE chiffre qui dit si on decode ce qu'on croit : il
         # merite une barre, pas une ligne de texte gris perdue dans le journal.
@@ -382,33 +387,33 @@ class App:
         theme.label(body, pal, fonts, kind="muted", textvariable=self.guard_var,
                     wraplength=340).pack(fill="x")
         theme.Tooltip(self.guard_bar,
-                      "Part des payloads décodés jusqu'à leur dernier octet.\n"
-                      "En dessous de 100 %, tu ne décodes pas ce que tu crois.",
+                      "Share of payloads decoded down to their last byte.\n"
+                      "Below 100 %, you are not decoding what you think.",
                       pal, fonts)
 
         tip = tk.Frame(body, background=pal.surface_alt, highlightthickness=1,
                        highlightbackground=pal.border)
         tip.pack(fill="x", pady=(12, 0))
-        tk.Label(tip, text="Ouvre l'écran VS pendant la capture, onglet par onglet, "
-                           "et laisse charger : le jeu n'envoie un classement qu'au "
-                           "moment où l'onglet se charge.",
+        tk.Label(tip, text="Open the VS screen while capturing, tab by tab, and "
+                           "let each one load: the game only sends a ranking "
+                           "when its tab loads.",
                  background=pal.surface_alt, foreground=pal.muted, font=fonts.small,
                  justify="left", anchor="w", wraplength=340).pack(
             fill="x", padx=11, pady=8)
 
     def _build_feeds(self, parent: tk.Frame) -> None:
         pal, fonts = self.pal, self.fonts
-        outer, body = theme.card(parent, pal, fonts, "Ce qui a été vu", step="3")
+        outer, body = theme.card(parent, pal, fonts, "What was seen", step="3")
         outer.pack(fill="both", expand=True, pady=(0, 12))
 
         holder = tk.Frame(body, background=pal.surface)
         holder.pack(fill="both", expand=True)
         self.tree = ttk.Treeview(holder, columns=("vu", "etat", "lignes"),
                                  show="tree headings", height=7, selectmode="browse")
-        self.tree.heading("#0", text="Statistique", anchor="w")
+        self.tree.heading("#0", text="Statistic", anchor="w")
         self.tree.heading("vu", text="Messages", anchor="center")
-        self.tree.heading("etat", text="État", anchor="w")
-        self.tree.heading("lignes", text="Lignes", anchor="e")
+        self.tree.heading("etat", text="Status", anchor="w")
+        self.tree.heading("lignes", text="Rows", anchor="e")
         self.tree.column("#0", width=300, minwidth=180)
         self.tree.column("vu", width=90, anchor="center", stretch=False)
         self.tree.column("etat", width=150, anchor="w", stretch=False)
@@ -430,21 +435,21 @@ class App:
 
         opts = tk.Frame(body, background=pal.surface)
         opts.pack(fill="x", pady=(8, 0))
-        theme.Check(opts, pal, fonts, "Seulement mon alliance", self.mine_var,
+        theme.Check(opts, pal, fonts, "My alliance only", self.mine_var,
                     command=self._refresh_feeds).pack(side="left")
-        keep_box = theme.Check(opts, pal, fonts, "Conserver l'historique localement",
+        keep_box = theme.Check(opts, pal, fonts, "Keep history locally",
                                self._keep, command=self._refresh_feeds)
         keep_box.pack(side="left", padx=24)
-        theme.Tooltip(keep_box, "Décoché, la base de session est effacée à la\n"
-                                "fermeture : seuls les exports JSON restent.",
+        theme.Tooltip(keep_box, "Unticked, the session database is deleted on\n"
+                                "close: only the JSON exports remain.",
                       pal, fonts)
 
         decl = tk.Frame(body, background=pal.surface)
         decl.pack(fill="x", pady=(12, 0))
-        theme.label(decl, pal, fonts, "Journée", kind="muted").pack(side="left")
+        theme.label(decl, pal, fonts, "Day", kind="muted").pack(side="left")
         ttk.Entry(decl, textvariable=self.day_var, width=4).pack(side="left",
                                                                  padx=(6, 16))
-        theme.label(decl, pal, fonts, "Événement", kind="muted").pack(side="left")
+        theme.label(decl, pal, fonts, "Event", kind="muted").pack(side="left")
         # Liste fermee : un libelle libre fragmenterait le suivi en aval.
         self.event_box = ttk.Combobox(decl, textvariable=self.event_var, width=26,
                                       state="readonly")
@@ -452,33 +457,33 @@ class App:
         add_btn = ttk.Button(decl, text="+", width=3, style="Ghost.TButton",
                              command=self._add_event)
         add_btn.pack(side="left")
-        theme.Tooltip(add_btn, "Ajouter un événement au catalogue", pal, fonts)
+        theme.Tooltip(add_btn, "Add an event to the catalogue", pal, fonts)
         self._reload_events()
         # Sous la ligne, pas a sa suite : a droite d'une combo large, la mise en
         # garde sortait du cadre et se faisait tronquer.
         theme.label(body, pal, fonts,
-                    "ces deux champs sont déclarés par toi, pas lus dans le jeu",
+                    "these two fields are declared by you, not read from the game",
                     kind="muted").pack(fill="x", pady=(6, 0))
 
         actions = tk.Frame(body, background=pal.surface)
         actions.pack(fill="x", pady=(14, 0))
-        self.export_btn = ttk.Button(actions, text="Exporter en JSON…",
+        self.export_btn = ttk.Button(actions, text="Export as JSON…",
                                      style="Accent.TButton",
                                      command=self._export, state="disabled")
         self.export_btn.pack(side="right")
         theme.Tooltip(self.export_btn,
-                      "Exporte la ligne sélectionnée   ·   Ctrl+E\n"
-                      "(double-clic sur la ligne aussi)", pal, fonts)
-        self.exportall_btn = ttk.Button(actions, text="Tout exporter…",
+                      "Exports the selected row   ·   Ctrl+E\n"
+                      "(double-clicking the row works too)", pal, fonts)
+        self.exportall_btn = ttk.Button(actions, text="Export all…",
                                         command=self._export_all, state="disabled")
         self.exportall_btn.pack(side="right", padx=8)
         theme.Tooltip(self.exportall_btn,
-                      "Écrit un fichier par classement prêt   ·   Ctrl+Maj+E",
+                      "Writes one file per ready ranking   ·   Ctrl+Shift+E",
                       pal, fonts)
 
     def _build_send(self, parent: tk.Frame) -> None:
         pal, fonts = self.pal, self.fonts
-        outer, body = theme.card(parent, pal, fonts, "Envoi vers le site", step="4")
+        outer, body = theme.card(parent, pal, fonts, "Send to the site", step="4")
         outer.pack(fill="both", expand=True)
         body.columnconfigure(0, weight=1)
 
@@ -487,24 +492,24 @@ class App:
         ttk.Entry(body, textvariable=self.url_var, width=10).grid(
             row=1, column=0, sticky="we", pady=(3, 0))
 
-        theme.label(body, pal, fonts, "Jeton", kind="muted").grid(
+        theme.label(body, pal, fonts, "Token", kind="muted").grid(
             row=2, column=0, sticky="w", pady=(12, 0))
         ttk.Entry(body, textvariable=self.token_var, width=10, show="•").grid(
             row=3, column=0, sticky="we", pady=(3, 0))
 
-        theme.Check(body, pal, fonts, "Envoyer après chaque capture",
+        theme.Check(body, pal, fonts, "Send after every capture",
                     self.autosend_var).grid(row=4, column=0, sticky="w",
                                             pady=(10, 0))
         # Un jeton en clair dans un fichier est un vrai risque : on ne le retient
         # que sur demande explicite, et on le dit.
-        theme.Check(body, pal, fonts, "Retenir le jeton (en clair sur ce poste)",
+        theme.Check(body, pal, fonts, "Remember the token (plain text on this PC)",
                     self.keep_token_var).grid(row=5, column=0, sticky="w", pady=(4, 0))
 
-        self.send_btn = ttk.Button(body, text="Envoyer maintenant",
+        self.send_btn = ttk.Button(body, text="Send now",
                                    style="Accent.TButton",
                                    command=self._publish_all, state="disabled")
         self.send_btn.grid(row=6, column=0, sticky="we", pady=(12, 0))
-        theme.Tooltip(self.send_btn, "Publie tous les classements prêts   ·   Ctrl+↵",
+        theme.Tooltip(self.send_btn, "Publishes every ready ranking   ·   Ctrl+↵",
                       pal, fonts)
 
         warn = tk.Frame(body, background=pal.surface)
@@ -513,13 +518,13 @@ class App:
         dot.pack(side="left", padx=(0, 7), pady=(4, 0), anchor="n")
         dot.colour(pal.warn)
         theme.label(warn, pal, fonts, kind="muted", wraplength=320,
-                    text="L'envoi publie les pseudos et identifiants de tous les "
-                         "joueurs du classement.").pack(side="left", fill="x")
+                    text="Sending publishes the names and ids of every player "
+                         "in the ranking.").pack(side="left", fill="x")
 
     def _build_log(self, parent: tk.Frame) -> None:
         pal, fonts = self.pal, self.fonts
-        outer, body = theme.card(parent, pal, fonts, "Journal",
-                                 hint="l'historique de la session")
+        outer, body = theme.card(parent, pal, fonts, "Log",
+                                 hint="this session's history")
         outer.pack(fill="both", expand=True)
 
         holder = tk.Frame(body, background=pal.surface)
@@ -542,9 +547,9 @@ class App:
 
         bar = tk.Frame(body, background=pal.surface)
         bar.pack(fill="x", pady=(8, 0))
-        ttk.Button(bar, text="Copier", style="Ghost.TButton",
+        ttk.Button(bar, text="Copy", style="Ghost.TButton",
                    command=self._copy_log).pack(side="right")
-        ttk.Button(bar, text="Effacer", style="Ghost.TButton",
+        ttk.Button(bar, text="Clear", style="Ghost.TButton",
                    command=self._clear_log).pack(side="right", padx=8)
 
     def _bind_keys(self) -> None:
@@ -573,8 +578,8 @@ class App:
     # -- utilitaires UI ---------------------------------------------------
     def _say(self, text: str, kind: str = "") -> None:
         if not kind and text.startswith("  "):
-            kind = "err" if "ECHEC" in text else "detail"
-        if not kind and text.startswith("[erreur]"):
+            kind = "err" if "FAILED" in text else "detail"
+        if not kind and text.startswith("[error]"):
             kind = "err"
         self.log.configure(state="normal")
         self.log.insert("end", f"{datetime.now():%H:%M:%S}  ", ("time",))
@@ -590,7 +595,7 @@ class App:
     def _copy_log(self) -> None:
         self.root.clipboard_clear()
         self.root.clipboard_append(self.log.get("1.0", "end-1c"))
-        self._say("journal copié dans le presse-papiers.")
+        self._say("log copied to the clipboard.")
 
     def _status(self, text: str, kind: str = "idle") -> None:
         self.status_var.set(text)
@@ -641,10 +646,9 @@ class App:
         worker lèverait « main thread is not in main loop ».
         """
         prefer = self._iface_device()
-        self._say("détection : toutes les interfaces écoutées en même temps, "
-                  "arrêt dès qu'une trame du jeu est reconnue. Laisse le jeu "
-                  "ouvert.")
-        self._status("détection…", "busy")
+        self._say("detecting: listening on every interface at once, stopping "
+                  "as soon as a game frame is recognised. Keep the game open.")
+        self._status("detecting…", "busy")
         self.detect_btn.configure(state="disabled")
 
         def work():
@@ -662,22 +666,22 @@ class App:
     def _detected(self, found: "capture.Detection") -> None:
         for att in found.attempts[:4]:
             best = att.best
-            note = (f"port {best.port} · {best.exact} trames exactes"
+            note = (f"port {best.port} · {best.exact} exact frames"
                     if best is not None and best.exact
-                    else (att.error or f"{att.report.total_packets} paquets, "
-                                       "aucune trame du jeu"))
-            self._say(f"  {att.iface.name or att.iface.device} : {note}")
+                    else (att.error or f"{att.report.total_packets} packets, "
+                                       "no game frame"))
+            self._say(f"  {att.iface.name or att.iface.device}: {note}")
         if found.iface is not None:
             self._set_iface(found.iface.device)
         problem = found.diagnosis()
         if problem:
-            self._say(f"[erreur] {problem}")
-            self._status("détection sans résultat", "err")
+            self._say(f"[error] {problem}")
+            self._status("detection found nothing", "err")
             return
         self.port_var.set(str(found.port))
         self._say(f"-> {found.iface.name or found.iface.device}, port "
-                  f"{found.port} — trouvé en {found.seconds:.0f} s.", "ok")
-        self._status("interface et port trouvés", "ok")
+                  f"{found.port} — found in {found.seconds:.0f} s.", "ok")
+        self._status("interface and port found", "ok")
 
     def _iface_device(self) -> str:
         """Le device tshark derriere le libelle affiche -- la vraie valeur."""
@@ -706,7 +710,7 @@ class App:
     def _start(self) -> None:
         iface, port = self._iface_device(), self.port_var.get().strip()
         if not iface or not port.isdigit():
-            messagebox.showinfo(TITLE, "Il faut une interface et un port numérique.")
+            messagebox.showinfo(TITLE, "An interface and a numeric port are required.")
             return
         self.prefs.update({"iface": iface, "port": port, "mine": self.mine_var.get(),
                            "keep": self._keep.get()})
@@ -716,8 +720,8 @@ class App:
         self._seen = {}
         self.start_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
-        self._status("capture en cours…", "busy")
-        self._say(f"capture démarrée sur le port {port}")
+        self._status("capturing…", "busy")
+        self._say(f"capture started on port {port}")
 
         source = self.source
         # Resolu ICI : `_active_db()` lit la variable Tk `_keep`, et la lire
@@ -737,8 +741,8 @@ class App:
     def _stop(self) -> None:
         if self.source is not None:
             self.source.stop()
-            self._status("arrêt en cours…", "busy")
-            self._say("arrêt demandé — les trames déjà reçues sont traitées.")
+            self._status("stopping…", "busy")
+            self._say("stop requested — frames already received are being processed.")
         self.stop_btn.configure(state="disabled")
 
     # -- boucle de drainage ----------------------------------------------
@@ -755,15 +759,15 @@ class App:
         if msg.kind == "log":
             self._say(msg.payload)
         elif msg.kind == "error":
-            self._say(f"[erreur] {msg.payload}")
-            self._status("erreur", "err")
+            self._say(f"[error] {msg.payload}")
+            self._status("error", "err")
         elif msg.kind == "busy":
             self._set_busy(msg.payload)
         elif msg.kind == "no_tshark":
             self._tshark_missing = True
             self._apply_prereq()
-            self._say("tshark introuvable : installe Wireshark (voir en haut de "
-                      "la fenêtre), puis relance lwvs.", "err")
+            self._say("tshark not found: install Wireshark (see the top of the "
+                      "window), then restart lwvs.", "err")
         elif msg.kind == "ifaces":
             self._iface_by_label = _iface_labels(msg.payload)
             values = list(self._iface_by_label)
@@ -780,15 +784,15 @@ class App:
                 self.iface_var.set(match or (values[0] if values else ""))
         elif msg.kind == "detecting":
             remaining, packets, exact = msg.payload
-            self._status(f"détection… {remaining} s max · {packets} paquets"
-                         + (f" · {exact} trames du jeu" if exact else ""), "busy")
+            self._status(f"detecting… {remaining} s max · {packets} packets"
+                         + (f" · {exact} game frames" if exact else ""), "busy")
         elif msg.kind == "detected":
             self._detected(msg.payload)
         elif msg.kind == "detect_end":
             self.detect_btn.configure(state="normal")
         elif msg.kind == "progress":
             if msg.payload is None:
-                self._status("prêt")
+                self._status("ready")
                 return
             payloads, decoded, exact, failed, commands = msg.payload
             elapsed = ""
@@ -796,15 +800,15 @@ class App:
                 secs = int((datetime.now(timezone.utc) - self.started_at).total_seconds())
                 elapsed = f"{secs // 60}:{secs % 60:02d}  ·  "
             self._status(
-                f"{elapsed}{payloads} payloads · {decoded} décodés · {failed} échecs",
+                f"{elapsed}{payloads} payloads · {decoded} decoded · {failed} failed",
                 "busy")
             self._guard(exact, decoded)
             self._seen = dict(commands)
             self._update_seen(commands)
         elif msg.kind == "sent":
             self._sync_buttons()
-            self._say("envoi terminé.", "ok")
-            self._status("envoi terminé", "ok")
+            self._say("send complete.", "ok")
+            self._status("send complete", "ok")
         elif msg.kind == "done":
             self._finish(msg.payload)
 
@@ -814,13 +818,13 @@ class App:
             value=pct,
             style=("Ok" if pct >= 99 else "Warn") + ".Horizontal.TProgressbar")
         if not decoded:
-            self.guard_var.set("aucune capture pour l'instant")
+            self.guard_var.set("no capture yet")
             return
         self.guard_var.set(
-            f"garde-fou : {exact}/{decoded} décodés jusqu'au dernier octet "
+            f"safeguard: {exact}/{decoded} decoded down to the last byte "
             f"({pct:.0f} %)"
             + ("" if pct >= 99
-               else "  ⚠ en dessous de 100 %, tu ne décodes pas ce que tu crois"))
+               else "  ⚠ below 100 %, you are not decoding what you think"))
 
     def _finish(self, result) -> None:
         self.snapshot_id = None if result.dropped else result.snapshot_id
@@ -829,18 +833,18 @@ class App:
         st, c = result.stats, result.counters
         self._guard(st.exact, st.decoded)
         self._status(
-            f"terminé — {st.payloads} payloads, {st.decoded} décodés, "
-            f"{st.failed} échecs", "err" if result.dropped else "ok")
-        self._say(f"capture terminée : snapshot #{result.snapshot_id}", "ok")
+            f"done — {st.payloads} payloads, {st.decoded} decoded, "
+            f"{st.failed} failed", "err" if result.dropped else "ok")
+        self._say(f"capture finished: snapshot #{result.snapshot_id}", "ok")
         if st.failures_by_tag:
             detail = "  ".join(f"0x{t:02x}×{n}" for t, n in st.failures_by_tag.most_common())
-            self._say(f"échecs par octet de type fautif : {detail}")
+            self._say(f"failures by offending type byte: {detail}")
         for name, n in sorted(c.commands.items(), key=lambda kv: -kv[1]):
             self._say(f"  {n:4d}  {name}")
         self._seen = dict(c.commands)
         if result.dropped:
-            self._say("aucun message exploitable : snapshot vide supprimé. "
-                      "L'écran VS a-t-il bien été rechargé ?", "err")
+            self._say("no usable message: empty snapshot dropped. "
+                      "Was the VS screen actually reloaded?", "err")
         self._refresh_feeds()
         if self.autosend_var.get() and self.url_var.get().strip():
             self._publish_all()
@@ -867,11 +871,12 @@ class App:
                 try:
                     own = exporter.resolve_own_alliance(store, snapshot)
                     self.alliance_var.set(
-                        f"alliance : {own.label}  ·  source : {own.source}")
+                        f"alliance: {own.label}  ·  source: "
+                        f"{_SOURCE_LABELS.get(own.source, own.source)}")
                 except ValueError:
                     self.alliance_var.set(
-                        "⚠ alliance non identifiée — ouvre l'écran Duel ou la "
-                        "liste des membres une fois, ce sera mémorisé")
+                        "⚠ alliance not identified — open the Duel screen or the "
+                        "member list once, it will be remembered")
             else:
                 self.alliance_var.set("")
             for feed in exporter.FEEDS:
@@ -883,9 +888,9 @@ class App:
                     days = self._days(store, snapshot) or [None]
                 for day in days:
                     key = f"feed:{feed.key}" + (f":{day}" if day is not None else "")
-                    label = feed.label + (f" — jour {day}" if day is not None else "")
+                    label = feed.label + (f" — day {day}" if day is not None else "")
                     seen = self._seen.get(feed.command, 0)
-                    count, state, tag = 0, "pas encore vu", "muted"
+                    count, state, tag = 0, "not seen yet", "muted"
                     if snapshot is not None:
                         try:
                             rows = exporter.collect(
@@ -915,12 +920,12 @@ class App:
         tient au constat brut.
         """
         if count:
-            return "✓  prêt", ""
+            return "✓  ready", ""
         if not self._seen:
-            return "aucune ligne", "muted"
+            return "no rows", "muted"
         if not seen:
-            return "message jamais reçu — rouvre l'écran", "muted"
-        return "reçu, mais aucune ligne : à signaler", "warn"
+            return "message never received — reopen the screen", "muted"
+        return "received, but no rows: please report", "warn"
 
     def _active_db(self) -> str:
         return self.db_path if self._keep.get() else str(self._temp_db)
@@ -979,7 +984,7 @@ class App:
         feed, day = entry["feed"], entry["day"]
         suffix = f"_j{day}" if day is not None else ""
         path = filedialog.asksaveasfilename(
-            title=f"Exporter — {feed.label}",
+            title=f"Export — {feed.label}",
             defaultextension=".json",
             initialfile=f"lwvs_{feed.key}{suffix}.json",
             filetypes=[("JSON", "*.json")],
@@ -991,7 +996,7 @@ class App:
     def _export_all(self) -> None:
         if not any(v["count"] for v in getattr(self, "_rows", {}).values()):
             return
-        folder = filedialog.askdirectory(title="Dossier de destination")
+        folder = filedialog.askdirectory(title="Destination folder")
         if not folder:
             return
         for entry in self._rows.values():
@@ -1012,14 +1017,14 @@ class App:
         from tkinter import simpledialog
 
         libelle = simpledialog.askstring(
-            TITLE, "Nom du nouvel événement (ex : S4 - Autre event) :",
+            TITLE, "Name of the new event (e.g. S4 - Another event):",
             parent=self.root)
         if not libelle or not libelle.strip():
             return
         cree = events_mod.add(libelle.strip())
         self._reload_events()
         self.event_var.set(cree.label)
-        self._say(f"événement ajouté : {cree.id}  ({cree.label})")
+        self._say(f"event added: {cree.id}  ({cree.label})")
 
     def _declared(self) -> tuple[int | None, str | None]:
         """Lu sur le thread UI : ce sont des variables Tk."""
@@ -1034,7 +1039,7 @@ class App:
     def _publish_all(self) -> None:
         url = self.url_var.get().strip()
         if not url:
-            messagebox.showinfo(TITLE, "Renseigne l'URL du site.")
+            messagebox.showinfo(TITLE, "Enter the site URL.")
             return
         token = self.token_var.get().strip() or None
         # On lit l'etat de l'UI ICI, sur le thread UI, et on ne passe au worker
@@ -1045,15 +1050,15 @@ class App:
         jobs = [(v["feed"], v["day"], self._alliance_for(v["feed"]))
                 for v in self._rows.values() if v["count"]]
         if not jobs:
-            messagebox.showinfo(TITLE, "Rien à envoyer : aucune capture exploitable.")
+            messagebox.showinfo(TITLE, "Nothing to send: no usable capture.")
             return
         snapshot = self.snapshot_id or self._latest_snapshot()
         db = self._active_db()
         declared = self._declared()
         self._remember_send()
         self.send_btn.configure(state="disabled")
-        self._status("envoi en cours…", "busy")
-        self._say(f"envoi de {len(jobs)} classement(s) vers {url}…")
+        self._status("sending…", "busy")
+        self._say(f"sending {len(jobs)} ranking(s) to {url}…")
 
         def work():
             with Store(db) as store:
@@ -1062,11 +1067,11 @@ class App:
                         payload = self._payload(store, feed, day, snapshot, alliance,
                                                 declared)
                     except ValueError as exc:
-                        self.q.put(Msg("log", f"  {feed.key} : refusé — {exc}"))
+                        self.q.put(Msg("log", f"  {feed.key}: refused — {exc}"))
                         continue
                     res = publish(payload, url, token=token)
-                    tag = "OK" if res.ok else "ECHEC"
-                    self.q.put(Msg("log", f"  {feed.key} : {tag} HTTP {res.status}"
+                    tag = "OK" if res.ok else "FAILED"
+                    self.q.put(Msg("log", f"  {feed.key}: {tag} HTTP {res.status}"
                                           f"  {res.response.strip()[:180] or res.error}"))
             self.q.put(Msg("sent", None))
         self._spawn(work)
@@ -1110,9 +1115,9 @@ class App:
                     snapshot=snapshot, mode=feed.mode, metric=feed.metric,
                     declared_day=self._declared()[0], event=self._declared()[1],
                 )
-            self._say(f"écrit : {written[0]}", "ok")
+            self._say(f"written: {written[0]}", "ok")
         except ValueError as exc:
-            self._say(f"[erreur] export refusé : {exc}")
+            self._say(f"[error] export refused: {exc}")
             messagebox.showerror(TITLE, str(exc))
 
 

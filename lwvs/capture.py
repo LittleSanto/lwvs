@@ -777,29 +777,29 @@ class Detection:
         if self.found:
             return None
         if not self.attempts:
-            return "aucune interface de capture n'est disponible."
+            return "no capture interface is available."
         if not self.packets:
             note = next((a.error for a in self.attempts if a.error), "")
             return (
-                "aucune interface ne voit passer de paquet TCP"
+                "no interface sees any TCP packet"
                 + (f" ({note})" if note else "")
-                + ". Npcap est-il installe, et cette session a-t-elle les droits"
-                " de capture ?"
+                + ". Is Npcap installed, and does this session have capture"
+                " rights?"
             )
         scored = any(a.report.scores for a in self.attempts)
         web = sum(a.report.web_packets for a in self.attempts)
         if not scored and web:
             ports = sorted({p for a in self.attempts for p in a.report.web_ports})
             return (
-                f"{self.packets} paquet(s) vus, mais tous sur des ports web"
-                f" ({', '.join(str(p) for p in ports)}), ecartes du scoring. Si le"
-                " jeu parle en TLS-like sur 443, relance en gardant les ports web :"
-                " le trafic n'est pas chiffre, seul le port l'est."
+                f"{self.packets} packet(s) seen, but all on web ports"
+                f" ({', '.join(str(p) for p in ports)}), excluded from scoring. If"
+                " the game speaks TLS-like on 443, rerun keeping web ports: the"
+                " traffic is not encrypted, only the port is."
             )
-        where = self.iface.name or self.iface.device if self.iface else "l'interface"
+        where = self.iface.name or self.iface.device if self.iface else "the interface"
         return (
-            f"du trafic passe bien sur {where}, mais aucun port n'a produit de"
-            " trame du jeu. Le jeu tournait-il pendant la detection ?"
+            f"traffic does flow on {where}, but no port produced a game frame."
+            " Was the game running during detection?"
         )
 
 
@@ -896,7 +896,7 @@ def autodetect(
         if not any(s in i.device.lower() for s in _SKIP_PROBE)
     ]
     if not targets:
-        return Detection(error="aucune interface de capture n'est disponible.")
+        return Detection(error="no capture interface is available.")
 
     stop = threading.Event()
     scorers = {i.device: PortScorer(exclude=exclude, keep_web=keep_web)

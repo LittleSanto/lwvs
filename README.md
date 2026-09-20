@@ -322,7 +322,7 @@ pièges d'encodage, ordres de grandeur.
 
 Le script lance **les tests d'abord** — on n'empaquette pas un arbre qui ne
 passe pas —, appelle PyInstaller sur [`lwvs-gui.spec`](lwvs-gui.spec), copie
-[`packaging/LISEZMOI.txt`](packaging/LISEZMOI.txt) dans le dossier et zippe le
+[`packaging/README.txt`](packaging/README.txt) dans le dossier et zippe le
 tout. ~13 Mo. Le destinataire n'a besoin **ni de Python ni de zstandard**.
 
 Il a toujours besoin de **Wireshark** : Npcap est un pilote signé dont la
@@ -346,7 +346,7 @@ premier paquet, bien trop tard.
 
 **Le binaire n'est pas signé.** SmartScreen affichera « Éditeur inconnu » et
 certains antivirus le mettront en quarantaine : c'est attendu pour un exécutable
-non signé qui écoute le réseau, et le `LISEZMOI` explique la manip. Un
+non signé qui écoute le réseau, et le `README.txt` du ZIP explique la manip. Un
 certificat de signature (~200-400 €/an) est la seule vraie réponse.
 
 À tester sur un poste **sans Python et sans Wireshark** : c'est le seul endroit
