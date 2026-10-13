@@ -33,11 +33,13 @@ from typing import Any, Sequence
 
 from . import events as events_mod
 from . import identity as identity_mod
+from .messages import game_date
 from .store import Store
 
 __all__ = ["DATASETS", "COLUMNS", "Feed", "FEEDS", "FEEDS_BY_KEY", "OwnAlliance",
-           "resolve_own_alliance", "collect",
-           "write_csv", "write_json", "build_records", "run_export"]
+           "resolve_own_alliance", "context_for", "collect",
+           "write_csv", "write_json", "write_doc", "build_records", "run_export",
+           "STORM_MODES", "build_storm_records", "TRAIN_MODE", "build_train_records"]
 
 DATASETS = ("players", "group", "standing", "members", "camp", "server")
 
@@ -142,6 +144,21 @@ def resolve_own_alliance(store: Store, snapshot: int | None = None,
     )
 
 
+def context_for(store: Store, snapshot: int | None) -> dict[str, Any]:
+    """Le `context` d'un document. CLI, `grab` et GUI passent par ici : deux
+    variantes donneraient deux corps, donc deux cles d'idempotence, pour une
+    meme capture.
+
+    Il decrit la MEME alliance que celle qui a filtre les lignes, y compris
+    quand elle vient de la memoire.
+    """
+    try:
+        mine = resolve_own_alliance(store, snapshot, remember=False).ids
+    except ValueError:
+        mine = None
+    return store.duel_context(snapshot, own_ids=mine)
+
+
 def collect(
     store: Store,
     dataset: str,
@@ -210,6 +227,19 @@ def write_json(payload: Any, stream: io.TextIOBase) -> None:
     stream.write("\n")
 
 
+def write_doc(out: Path, name: str, used: set[str], payload: Any) -> Path:
+    """`out/<name>.json`. Deux documents au meme nom dans un lot ne s'ecrasent
+    jamais : le second devient `<name>_2`, et ainsi de suite."""
+    stem, k = name, 2
+    while stem in used:
+        stem, k = f"{name}_{k}", k + 1
+    used.add(stem)
+    target = out / f"{stem}.json"
+    with target.open("w", encoding="utf-8", newline="") as fh:
+        write_json(payload, fh)
+    return target
+
+
 # ---------------------------------------------------------------------------
 # Format "records" -- la forme attendue par l'outil OCR en aval
 # ---------------------------------------------------------------------------
@@ -274,6 +304,16 @@ def write_json(payload: Any, stream: io.TextIOBase) -> None:
 #   Seul flux qui deborde de ton alliance : le classement couvre TOUT le
 #   serveur (200 lignes, 15 alliances observees). Le filtre `mine` s'appuie sur
 #   un vrai `allianceId`, pas sur l'abreviation.
+#
+# * `alliance_role` <- `rank` du roster (`al.rank`) : le GRADE dans l'alliance,
+#   1..5 pour R1..R5. Pas un classement : `score` porte le grade, et le tri
+#   met les R5 en tete. Sur les captures du 10 et du 11/08/2026 (99 membres) :
+#   1 R5, 9 R4, 1 R3, 42 R2, 46 R1 -- la forme d'une hierarchie d'alliance.
+#
+#   Le document porte TOUT le roster, pas seulement les R4/R5. Un officier
+#   retrograde disparaitrait sinon du document, et l'aval ne pourrait pas
+#   distinguer "retrograde" de "pas mesure" (absence != zero). C'est a l'aval
+#   de filtrer `score >= 4`.
 
 #: dataset -> (colonne de score par defaut, mode par defaut)
 #:
@@ -299,6 +339,7 @@ _METRIC_MODES: dict[tuple[str, str], str] = {
     ("members", "army_kill"): "kill_rank",
     ("members", "weekly_progress"): "donation_weekly_rank",
     ("members", "today_progress"): "donation_daily_rank",
+    ("members", "alliance_rank"): "alliance_role",
     ("camp", "score"): "camp_battle_rank",
     ("players", "score"): "vs_rank",
     ("server", "hero_power"): "thp_rank",
@@ -370,6 +411,18 @@ FEEDS: tuple[Feed, ...] = (
         inherently_mine=True,
         hint="`todayProgress` : la part du jour dans le total de la semaine. "
              "Se vide a la remise a zero quotidienne -- a capturer le jour meme.",
+    ),
+    Feed(
+        key="roles",
+        label="Alliance roles (R1–R5)",
+        dataset="members",
+        command="al.rank",
+        metric="alliance_rank",
+        mode="alliance_role",
+        inherently_mine=True,
+        hint="`rank` du roster : le grade de chaque membre, 1..5 pour R1..R5. "
+             "Tout le roster est envoye, pas seulement les officiers : une "
+             "retrogradation doit se voir en aval.",
     ),
     Feed(
         key="thp",
@@ -535,6 +588,189 @@ def build_records(
     return doc
 
 
+# ---------------------------------------------------------------------------
+# Desert Storm / Canyon Storm -- un document par mail (donc par bataille)
+# ---------------------------------------------------------------------------
+#
+# Meme forme que les autres documents, et memes regles : `rank` positionnel
+# 1..N dans le document, `uid` en texte, `exported_at` = instant de la MESURE
+# -- ici l'emission du mail, c'est-a-dire la fin de la bataille. Deux exports
+# du meme mail produisent donc un document identique, octet pour octet : la
+# cle d'idempotence le reconnait, et reexporter une semaine deja envoyee est
+# sans danger.
+#
+# Ce qui s'ajoute par ligne, sous des noms distincts de `rank` (une seule
+# semantique par nom de champ) :
+#
+# * `game_rank` -- le rang du JEU. En Canyon il a des trous quand une alliee
+#   partage le camp : c'est celui de l'ecran.
+# * `battle_score`, `assist_score`, `strategy_score` (Canyon) -- la ventilation
+#   de `score`, qui en est la somme exacte. Pas trois metriques : une seule,
+#   decomposee. Un mode par metrique reste la regle.
+
+STORM_MODES: dict[str, str] = {
+    "desert_storm": "desert_storm_rank",
+    "canyon_storm": "canyon_storm_rank",
+}
+
+
+def _iso_utc(ms: int) -> str:
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).isoformat(timespec="seconds")
+
+
+def _storm_alliance_ctx(a: Any) -> dict[str, Any]:
+    out = {"id": a.alliance_id, "alliance_abbr": a.abbr,
+           "alliance_name": a.name, "server_id": a.server_id}
+    if a.score is not None:
+        out["score"] = a.score
+    return {k: v for k, v in out.items() if v is not None}
+
+
+def build_storm_records(report: Any, own_alliance_id: str | None,
+                        only_mine: bool = True) -> dict[str, Any]:
+    """Document `records` d'un rapport de Storm.
+
+    `only_mine` garde les seules lignes de TON alliance (par identifiant, pas
+    par abreviation). Leve ValueError si ton alliance n'est pas dans ce mail --
+    un mail d'un ancien chapitre, sous une autre alliance, n'est pas le tien a
+    publier par defaut.
+    """
+    mine = next((a for a in report.own_side
+                 if own_alliance_id and a.alliance_id == own_alliance_id), None)
+    if only_mine and mine is None:
+        present = ", ".join(a.abbr or "?" for a in report.own_side) or "aucune"
+        raise ValueError(
+            f"your alliance is not in this mail (side: {present}) -- a mail from"
+            " a previous alliance, or a stale remembered alliance."
+            " --all-alliances exports it anyway.")
+    rows = [r for r in report.rows
+            if not only_mine or r.alliance_id == own_alliance_id]
+    ranked = sorted(rows, key=lambda r: (r.score is None, -(r.score or 0)))
+    canyon = report.kind == "canyon_storm"
+
+    records = []
+    for i, r in enumerate(ranked):
+        rec: dict[str, Any] = {"rank": i + 1, "uid": r.uid, "player_name": r.name,
+                               "score": r.score, "game_rank": r.game_rank}
+        if canyon:
+            rec["battle_score"] = r.battle_score
+            rec["assist_score"] = r.assist_score
+            rec["strategy_score"] = r.strategy_score
+        records.append(rec)
+
+    ctx: dict[str, Any] = {
+        "battle_date": _iso_utc(report.created_ms)[:10],
+        "mail_uid": report.mail_uid,
+    }
+    # Equipe inconnue = cle absente, jamais null (meme regle que `context`).
+    if report.team:
+        ctx["team"] = report.team
+        ctx["team_source"] = report.team_source
+    if report.won is not None:
+        ctx["result"] = "win" if report.won else "loss"
+    # Le CAMP, pas l'alliance : en Canyon il peut en reunir deux.
+    for key, score, members in (("side", report.own_score, report.own_members),
+                                ("opponent_side", report.other_score,
+                                 report.other_members)):
+        camp = {k: v for k, v in (("score", score), ("members", members))
+                if v is not None}
+        if camp:
+            ctx[key] = camp
+    if mine is not None:
+        ctx["alliance"] = _storm_alliance_ctx(mine)
+    allies = [_storm_alliance_ctx(a) for a in report.own_side if a is not mine]
+    if allies:
+        ctx["allies"] = allies
+    if report.other_side:
+        ctx["opponents"] = [_storm_alliance_ctx(a) for a in report.other_side]
+
+    return {
+        "exported_at": _iso_utc(report.created_ms),
+        "mode": STORM_MODES[report.kind],
+        "context": ctx,
+        "records": records,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Trains d'alliance -- un document par train
+# ---------------------------------------------------------------------------
+#
+# Le document dit QUI, pas combien : `records` = le conducteur, puis le VIP ou
+# le Guardian. Aucun `score` -- le mail ne porte aucune valeur qu'on sache
+# nommer pour eux (`power` y est, mais on n'exporte pas une metrique sans
+# nom, cf. le faux ami du THP). Le role est un champ a part, `role`.
+#
+# `exported_at` = emission du mail SOURCE : le depart tant que le train roule,
+# l'arrivee ensuite. Un meme train peut donc produire deux documents, l'un a
+# `arrived: false`, l'autre complet : le site les rapproche par `train_id`, et
+# garde le plus recent.
+
+TRAIN_MODE = "alliance_train"
+
+
+def build_train_records(run: Any, own_alliance_id: str | None,
+                        only_mine: bool = True) -> dict[str, Any]:
+    """Document `records` d'un train d'alliance.
+
+    Leve ValueError si `only_mine` et que le train n'est pas de ton alliance --
+    un train d'un ancien chapitre n'est pas le tien a publier par defaut.
+    """
+    if only_mine and (not own_alliance_id or run.alliance_id != own_alliance_id):
+        raise ValueError(
+            f"this train is not your alliance's ({run.alliance_abbr or '?'}) -- a"
+            " mail from a previous alliance, or a stale remembered alliance."
+            " --all-alliances exports it anyway.")
+    crew = [("conductor", run.conductor)]
+    if run.escort is not None:
+        # Role inconnu : le joueur reste, le role est absent -- jamais devine.
+        crew.append((run.escort_role, run.escort))
+    records = []
+    for i, (role, who) in enumerate(crew):
+        rec: dict[str, Any] = {"rank": i + 1, "uid": who.uid, "player_name": who.name}
+        if role:
+            rec["role"] = role
+        if who.alliance_abbr:
+            rec["alliance_abbr"] = who.alliance_abbr
+        records.append(rec)
+
+    when = run.departed_ms if run.departed_ms is not None else run.created_ms
+    ctx: dict[str, Any] = {
+        "train_id": run.train_id,
+        "train_date": game_date(when),
+        "mail_uid": run.mail_uid,
+        "arrived": run.arrived,
+    }
+    if run.departed_ms is not None:
+        ctx["departed_at"] = _iso_utc(run.departed_ms)
+    if run.arrival_ms is not None:
+        ctx["arrived_at" if run.arrived else "expected_arrival_at"] = \
+            _iso_utc(run.arrival_ms)
+    if run.purchased is not None:
+        ctx["purchased"] = run.purchased
+    if run.escort_role:
+        ctx["escort"] = run.escort_role
+    if run.self_select is not None:
+        ctx["self_select"] = run.self_select
+    ctx["passengers"] = run.passengers
+    for key in ("rob_times", "completeness", "attacks", "attacks_repelled"):
+        value = getattr(run, key)
+        if value is not None:
+            ctx[key] = value
+    alliance = {"id": run.alliance_id, "alliance_abbr": run.alliance_abbr,
+                "alliance_name": run.alliance_name, "server_id": run.server_id}
+    alliance = {k: v for k, v in alliance.items() if v is not None}
+    if alliance:
+        ctx["alliance"] = alliance
+
+    return {
+        "exported_at": _iso_utc(run.created_ms),
+        "mode": TRAIN_MODE,
+        "context": ctx,
+        "records": records,
+    }
+
+
 def _open(path: Path, bom: bool) -> io.TextIOBase:
     path.parent.mkdir(parents=True, exist_ok=True)
     return path.open("w", encoding="utf-8-sig" if bom else "utf-8", newline="")
@@ -591,14 +827,8 @@ def run_export(
                 "le format 'records' porte un seul classement : choisis"
                 " --dataset members ou --dataset players."
             )
-        # Le contexte doit decrire la MEME alliance que celle qui a filtre les
-        # lignes, y compris quand elle vient de la memoire.
-        try:
-            mine = resolve_own_alliance(store, snapshot, remember=False).ids
-        except ValueError:
-            mine = None
         payload = build_records(data[wanted[0]], wanted[0], mode=mode, scope=scope,
-                                context=store.duel_context(snapshot, own_ids=mine),
+                                context=context_for(store, snapshot),
                                 declared_day=declared_day, event=event,
                                 metric=metric)
         if out in (None, "-"):

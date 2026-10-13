@@ -177,6 +177,13 @@ _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
 )
 
 
+def _in(column: str, values: Sequence[Any], prefix: str,
+        params: dict[str, Any]) -> str:
+    """`column IN (:p0, :p1, ...)`, valeurs ajoutees a `params`."""
+    params.update({f"{prefix}{i}": v for i, v in enumerate(values)})
+    return f"{column} IN ({', '.join(f':{prefix}{i}' for i in range(len(values)))})"
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -418,9 +425,9 @@ class Store:
             where.append("c.snapshot_id = :snapshot")
             params["snapshot"] = snapshot
         if abbrs:
-            keys = [f":ab{i}" for i in range(len(abbrs))]
-            where.append(f"c.alliance_abbr IN ({', '.join(keys)}) COLLATE NOCASE")
-            params.update({f"ab{i}": v for i, v in enumerate(abbrs)})
+            # COLLATE avant IN : place apres, il porte sur le resultat du IN
+            # et la comparaison reste sensible a la casse.
+            where.append(_in("c.alliance_abbr COLLATE NOCASE", abbrs, "ab", params))
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY c.snapshot_id, c.rank"
@@ -458,9 +465,7 @@ class Store:
             where.append("v.snapshot_id = :snapshot")
             params["snapshot"] = snapshot
         if alliance_ids:
-            keys = [f":aid{i}" for i in range(len(alliance_ids))]
-            where.append(f"v.alliance_id IN ({', '.join(keys)})")
-            params.update({f"aid{i}": v for i, v in enumerate(alliance_ids)})
+            where.append(_in("v.alliance_id", alliance_ids, "aid", params))
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY v.snapshot_id, v.raw_type, v.rank"
@@ -556,21 +561,6 @@ class Store:
             if row:
                 return {c: row[c] for c in cols if row[c] is not None}
         return {}
-
-    def own_alliance_labels(self, snapshot: int | None = None) -> list[tuple[str, str, str]]:
-        """(id, nom, abbr) de ton alliance, pour l'afficher a l'utilisateur."""
-        sql = (
-            "SELECT DISTINCT g.alliance_id, g.alliance_name, g.alliance_abbr"
-            " FROM standings t JOIN group_rows g ON g.snapshot_id = t.snapshot_id"
-            "                              AND g.position = t.position"
-            " WHERE t.scope = 'current' AND g.alliance_id IS NOT NULL"
-        )
-        params: dict[str, Any] = {}
-        if snapshot is not None:
-            sql += " AND t.snapshot_id = :snapshot"
-            params["snapshot"] = snapshot
-        return [(r["alliance_id"], r["alliance_name"] or "", r["alliance_abbr"] or "")
-                for r in self.conn.execute(sql, params).fetchall()]
 
     def duel_context(self, snapshot: int | None = None,
                      own_ids: Sequence[str] | None = None) -> dict[str, Any]:
@@ -671,9 +661,7 @@ class Store:
             where.append("m.snapshot_id = :snapshot")
             params["snapshot"] = snapshot
         if alliance_ids:
-            keys = [f":aid{i}" for i in range(len(alliance_ids))]
-            where.append(f"m.alliance_id IN ({', '.join(keys)})")
-            params.update({f"aid{i}": v for i, v in enumerate(alliance_ids)})
+            where.append(_in("m.alliance_id", alliance_ids, "aid", params))
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY m.snapshot_id, m.army_kill DESC"
@@ -699,9 +687,7 @@ class Store:
         )
         where, params = self._filters(scope, day, alliance, snapshot, table="r")
         if alliance_ids:
-            keys = [f":aid{i}" for i in range(len(alliance_ids))]
-            where.append(f"r.alliance_id IN ({', '.join(keys)})")
-            params.update({f"aid{i}": v for i, v in enumerate(alliance_ids)})
+            where.append(_in("r.alliance_id", alliance_ids, "aid", params))
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY r.snapshot_id, r.scope, COALESCE(r.day, -1), r.rank"
@@ -731,9 +717,7 @@ class Store:
             params["alliance"] = f"%{alliance}%"
             params["alliance_exact"] = alliance
         if alliance_ids:
-            keys = [f":aid{i}" for i in range(len(alliance_ids))]
-            where.append(f"g.alliance_id IN ({', '.join(keys)})")
-            params.update({f"aid{i}": v for i, v in enumerate(alliance_ids)})
+            where.append(_in("g.alliance_id", alliance_ids, "aid", params))
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY g.snapshot_id, g.position"

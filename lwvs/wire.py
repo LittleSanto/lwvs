@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import struct
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Iterator, Mapping, NamedTuple, Sequence
+from typing import Any, Iterable, Iterator, Mapping, NamedTuple
 
 import zstandard
 
@@ -65,7 +65,6 @@ __all__ = [
     "raw_bytes",
     "encode_value",
     "encode_frame",
-    "encode_stream",
 ]
 
 
@@ -355,8 +354,8 @@ class FrameReader:
 # observe est une cle `_proto` contenant du protobuf embarque : on le garde en
 # bytes bruts, le decoder comme du texte le massacrerait.
 #
-# INCONNUS : 0x06, 0x07, 0x0C, 0x0D. Vus dans du vrai trafic, layout non
-# etabli. On NE DEVINE PAS leur largeur : une largeur devinee corrompt
+# INCONNUS : 0x06, 0x0C, 0x0D (0x07 est resolu : TAG_DOUBLE). Vus dans du vrai
+# trafic, layout non etabli. On NE DEVINE PAS leur largeur : une largeur devinee corrompt
 # silencieusement tous les champs suivants, ce qui est bien pire qu'un arret
 # net. Le decodage s'arrete proprement en rapportant offset et hexa.
 
@@ -869,10 +868,6 @@ def encode_frame(
     if len(body) > 0xFFFF:
         raise ValueError("payload brut > 65535 octets : compresser")
     return struct.pack(">BH", FLAG_RAW if flag is None else flag, len(body)) + body
-
-
-def encode_stream(frames: Sequence[bytes]) -> bytes:
-    return b"".join(frames)
 
 
 def iter_frames(data: bytes, name: str = "") -> Iterator[Frame]:

@@ -200,6 +200,24 @@ def apply(root: tk.Tk, mode: str = "sombre") -> tuple[Palette, Fonts]:
               background=[("active", pal.surface_alt), ("pressed", pal.surface_alt)],
               relief=[("active", "flat"), ("pressed", "flat")])
 
+    # -- onglets ------------------------------------------------------------
+    # Onglets a plat sur la carte : l'actif prend la couleur d'accent, les
+    # autres restent en retrait. Le cadre grave de clam disparait.
+    # Le cadre du contenu est peint avec bordercolor/lightcolor/darkcolor, pas
+    # avec relief : sans les trois, clam trace un liseré clair autour de l'onglet.
+    style.configure("Card.TNotebook", background=pal.surface,
+                    bordercolor=pal.surface, lightcolor=pal.surface,
+                    darkcolor=pal.surface, tabmargins=(0, 0, 0, 8), **flat)
+    style.configure("Card.TNotebook.Tab", background=pal.surface,
+                    foreground=pal.muted, bordercolor=pal.surface,
+                    lightcolor=pal.surface, darkcolor=pal.surface,
+                    padding=(12, 6), font=fonts.small_bold, **flat)
+    style.map("Card.TNotebook.Tab",
+              background=[("selected", pal.accent_soft), ("active", pal.surface_alt)],
+              foreground=[("selected", pal.accent), ("active", pal.text)],
+              lightcolor=[("selected", pal.accent_soft)],
+              bordercolor=[("selected", pal.accent_soft)])
+
     # -- barres -------------------------------------------------------------
     for orient in ("Vertical", "Horizontal"):
         name = f"Slim.{orient}.TScrollbar"

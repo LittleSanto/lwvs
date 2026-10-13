@@ -52,6 +52,10 @@ le fil, elles sont exactes ou absentes. Le site ne doit pas les attendre.
 | `donation_weekly_rank` | points de don de la semaine (`weeklyProgress`) | remis à zéro chaque semaine |
 | `donation_daily_rank` | points de don du jour (`todayProgress`) | remis à zéro chaque jour |
 | `thp_rank` | THP du joueur — `heroPower` du classement du serveur | **ni l'un ni l'autre** — instantané |
+| `alliance_role` | **grade** dans l'alliance : `1`..`5` pour R1..R5 — pas une performance | ni l'un ni l'autre — un état |
+| `desert_storm_rank` | points personnels d'**une** bataille de Desert Storm | non — une bataille |
+| `canyon_storm_rank` | points totaux d'**une** bataille de Canyon Storm (bataille + assistance + stratégie) | non — une bataille |
+| `alliance_train` | **pas de `score`** : qui conduisait **un** train, et son VIP ou Guardian | non — un train |
 
 D'autres modes apparaîtront. **Le site doit accepter un `mode` inconnu** en le
 stockant tel quel plutôt qu'en rejetant le document : de nouvelles statistiques
@@ -209,6 +213,166 @@ Le message a un champ `type` qui désigne l'onglet du classement. Un seul (13) a
 transporte sans l'interpréter. Le site n'a rien à en faire aujourd'hui, mais
 qu'il sache que deux onglets différents pourraient un jour porter deux
 métriques sous le même nom de champ.
+
+---
+
+### `alliance_role` — le grade, pas un score
+
+Source : `al.rank`, **le même message que `kill_rank`** — le champ `rank` de
+chaque membre. `score` vaut `1` à `5` pour R1 à R5. Ce n'est pas une
+performance : ne jamais l'additionner, le moyenner ni le soustraire.
+
+Sur les captures des 10 et 11/08/2026 (99 membres) : 1 R5, 9 R4, 1 R3,
+42 R2, 46 R1 — les deux fois identique.
+
+**Le document porte tout le roster, pas seulement les officiers.** C'est ce qui
+permet de voir une rétrogradation : un R4 redevenu R3 arrive avec `score: 3`,
+alors que dans un document limité aux R4/R5 il aurait simplement disparu — et
+une absence ne se distingue pas d'un écran non capturé. Pour ne garder que les
+officiers, le site filtre `score >= 4`.
+
+**Ce que le site doit en faire :** pour chaque `uid` du document, **remplacer**
+le grade enregistré par `score`. Le plus récent `exported_at` fait foi. Un
+joueur absent du document n'a pas changé de grade : il n'a pas été mesuré (ou
+a quitté l'alliance — le document ne permet pas de trancher).
+
+`rank` est trié R5 en tête, puis dans l'ordre du roster : entre deux membres de
+même grade, il ne veut rien dire.
+
+---
+
+### `desert_storm_rank` / `canyon_storm_rank` — un document par bataille
+
+Source : les **mails de résultat** du jeu, lus dans le cache local du client
+(`lwvs storm`), pas sur le réseau — un mail ne passe sur le fil qu'une fois, à
+sa réception. Chaque semaine produit **quatre documents** : Canyon A et B le
+jeudi, Desert A et B le vendredi. Un document = une bataille = une équipe.
+
+```json
+{
+  "exported_at": "2026-09-24T14:30:46+00:00",
+  "mode": "canyon_storm_rank",
+  "context": {
+    "battle_date": "2026-09-24",
+    "mail_uid": "66fffbc8b4f74d38a14e936a99d4c029",
+    "team": "B",
+    "team_source": "message",
+    "result": "win",
+    "side":          { "score": 322631, "members": 20 },
+    "opponent_side": { "score": 185981, "members": 38 },
+    "alliance":  { "id": "6671…", "alliance_abbr": "GolD", "alliance_name": "Golden Fire", "server_id": 1719 },
+    "opponents": [ { "id": "ee1b…", "alliance_abbr": "VOXM", "…": "…" }, { "…": "TIWA" } ]
+  },
+  "records": [
+    { "rank": 1, "uid": "…", "player_name": "…", "score": 15570471, "game_rank": 1,
+      "battle_score": 14194371, "assist_score": 375100, "strategy_score": 1001000 }
+  ]
+}
+```
+
+| champ | sens |
+|---|---|
+| `exported_at` | émission du mail = **fin de la bataille**. Réexporter le même mail donne un document **identique octet pour octet**, donc la même `Idempotency-Key` : renvoyer une semaine déjà envoyée est sans danger. |
+| `context.battle_date` | jour de la bataille (UTC). La semaine se déduit de là. |
+| `context.team` | `"A"` ou `"B"`. **Absent** si inconnu, jamais deviné. |
+| `context.team_source` | `"message"` (Canyon : lu dans le titre du mail) ou `"declared"` (Desert, voir plus bas) |
+| `context.result` | `"win"` / `"loss"`, du point de vue de ton camp |
+| `context.side`, `opponent_side` | score du **camp** (et effectif en Canyon — le « 38/40 » de l'écran) |
+| `context.alliance` | ton alliance. `allies` : les autres alliances de ton camp (Canyon) |
+| `context.opponents` | **liste** : en Canyon, le camp adverse peut réunir deux alliances. Ce n'est pas le `opponent` singulier du duel VS. |
+| `records[].game_rank` | le rang **du jeu**, celui de l'écran — distinct de `rank` (§4) |
+| `battle_score`, `assist_score`, `strategy_score` | Canyon seulement : la **ventilation** de `score`, qui en est la somme exacte (vérifié sur 206 lignes). Une métrique décomposée, pas trois métriques. |
+
+**Participation.** Figurer dans `records`, c'est avoir participé à cette
+bataille. Le mail **ne porte pas la liste des inscrits** : un membre absent du
+document n'a pas joué (ou n'était pas inscrit), sans que l'on puisse trancher.
+En Canyon, `records` peut dépasser l'effectif affiché : 44 lignes pour un
+« 38/40 », parce qu'il compte aussi ceux qui sont entrés puis sortis.
+
+**`game_rank` a des trous en Canyon, et c'est juste.** Le camp peut réunir ton
+alliance et une alliée ; le jeu les classe ensemble, et le document ne garde que
+ton alliance. On obtient 5, 6, 8, 9, 10, 13… — exactement l'écran quand la case
+« Mon Alliance » est cochée. En Desert, le camp est une seule alliance :
+`game_rank` vaut 1..N.
+
+**L'équipe du Desert Storm est déclarée, pas mesurée.** Le mail ne porte aucun
+marqueur d'équipe. La règle vient de l'alliance : le créneau du **soir** est
+l'équipe **A**, celui du **début d'après-midi** l'équipe **B** (20:30 et 11:30
+UTC, soit 22:30 et 13:30 l'été à Paris). Le site doit traiter
+`team_source: "declared"` comme une saisie humaine : si l'alliance change de
+créneaux, ce champ devient faux sans que rien ne le signale.
+
+**Ce que le site doit en faire :** stocker chaque document comme une bataille
+distincte, clé `(mode, battle_date, team)` — ou `mail_uid`, unique. Ne jamais
+additionner deux batailles pour faire « la semaine » sans le dire : A et B sont
+deux équipes différentes, pas deux manches.
+
+### `alliance_train` — un document par train
+
+Source : les **mails de train** du cache local (`lwvs trains`), comme Storm.
+Chaque membre reçoit les mails de **chaque** train de son alliance : un train
+quotidien, plus les trains **achetés**. Le but côté site : confronter les
+trains **réellement partis** au planning des conducteurs, et compter VIP et
+Guardians.
+
+```json
+{
+  "exported_at": "2026-10-09T23:34:01+00:00",
+  "mode": "alliance_train",
+  "context": {
+    "train_id": "1425382470714832757",
+    "train_date": "2026-10-09",
+    "mail_uid": "8d8995fc…",
+    "arrived": true,
+    "departed_at": "2026-10-09T22:08:00+00:00",
+    "arrived_at": "2026-10-09T23:34:01+00:00",
+    "purchased": false,
+    "escort": "guardian",
+    "self_select": true,
+    "passengers": 28,
+    "rob_times": 1, "completeness": 0.9,
+    "attacks": 2, "attacks_repelled": 1,
+    "alliance": { "id": "6671…", "alliance_abbr": "GolD", "alliance_name": "Golden Fire", "server_id": 1719 }
+  },
+  "records": [
+    { "rank": 1, "uid": "…", "player_name": "…", "role": "conductor", "alliance_abbr": "GolD" },
+    { "rank": 2, "uid": "…", "player_name": "…", "role": "guardian",  "alliance_abbr": "GolD" }
+  ]
+}
+```
+
+| champ | sens |
+|---|---|
+| `records` | le **conducteur** (`role: "conductor"`), puis l'**escorte** : `"vip"` ou `"guardian"`. Un seul record si aucune escorte n'a été désignée. **Pas de `score`** : ce document dit *qui*, pas *combien*. |
+| `records[].role` | **absent** si le jeu envoie un type d'escorte inconnu : le joueur reste, son rôle n'est pas deviné. |
+| `context.train_id` | identifiant du train, **en texte** (19 chiffres, au-delà de la précision d'un flottant — même règle que `uid`, §3). **C'est la clé.** |
+| `context.train_date` | le **jour du jeu** (heure du serveur, UTC−2 : la journée change à 02:00 UTC). Un train parti à 01:14 UTC compte pour la **veille**. C'est la date à confronter au planning. |
+| `context.purchased` | `true` : train **acheté**, en plus du train quotidien. Un jour peut donc avoir deux trains ; le train « planifié » est celui à `false`. |
+| `context.escort` | `"vip"` ou `"guardian"`, le même que le `role` du record 2. Absent s'il n'y en a pas. |
+| `context.arrived` | `false` : le train roulait encore quand la boîte a été lue. Voir plus bas. |
+| `context.departed_at`, `arrived_at` | instants UTC. `expected_arrival_at` remplace `arrived_at` tant que `arrived` vaut `false`. |
+| `context.passengers` | passagers, conducteur **non** compris. |
+| `context.attacks`, `attacks_repelled` | arrivée seulement : attaques subies, et celles que la défense a repoussées. |
+| `context.rob_times`, `completeness` | arrivée seulement : pillages réussis (= `attacks − attacks_repelled`), et part de cargaison restante (1,0 − 0,1 par pillage). |
+| `context.self_select` | **brut, sens non confirmé.** `false` 3 fois sur 71 trains. Hypothèse : `true` = conducteur désigné par un R4/R5, `false` = tiré au sort par le jeu. Ne pas l'afficher comme un fait avant confirmation. |
+
+**VIP ou Guardian : établi, pas supposé.** Le Guardian défend le train avec sa
+propre escouade ; le VIP n'est qu'un bénéficiaire. Le mail porte l'escouade de
+défense, dont les héros sont propres à un joueur : sur 43 paires de trains
+partageant des héros, les 43 désignent bien le même Guardian (ou le même
+conducteur quand l'escorte est un VIP).
+
+**Un même train peut arriver deux fois.** Lu pendant le trajet, il produit un
+document `arrived: false` ; relu après l'arrivée, un document complet, avec un
+autre `exported_at` — donc une autre `Idempotency-Key` (§5). **Le site
+rapproche sur `train_id` et garde le document le plus récent** (`arrived: true`
+l'emporte).
+
+**Ce que le site doit en faire :** une ligne par `train_id`. Pour valider le
+planning : joindre `(train_date, purchased = false)` au conducteur prévu ce
+jour-là, sur `uid` — jamais sur le pseudo. Un jour sans document n'est pas
+forcément un jour sans train : la boîte du client expire, et ne contient que ce
+qu'elle a reçu.
 
 ---
 
@@ -375,7 +539,7 @@ lwvs grab --iface "\Device\NPF_{...}" --port 18731 --duration 180 -o exports/
 ```
 
 Écrit `lwvs_kills.json`, `lwvs_dons_semaine.json`, `lwvs_dons_jour.json`,
-`lwvs_thp.json`, `lwvs_vs_total.json`, `lwvs_vs_day_j1.json`,
+`lwvs_roles.json`, `lwvs_thp.json`, `lwvs_vs_total.json`, `lwvs_vs_day_j1.json`,
 `lwvs_camp_battle.json`…
 
 Pour un événement, la journée et le nom se déclarent :
@@ -384,14 +548,27 @@ Pour un événement, la journée et le nom se déclarent :
 lwvs grab --iface ... --port ... -o exports/   --declare-day 3 --event "Saison 3 - Spice Wars"
 ```
 
+Desert Storm et Canyon Storm se lisent dans le cache du jeu, sans capture :
+
+```bash
+lwvs storm -o exports/                      # les 7 derniers jours
+lwvs storm --since 2026-09-14 -o exports/   # depuis une date
+lwvs storm --list --all                     # ce que contient le cache, sans pseudo
+```
+
+Écrit `lwvs_canyon_storm_2026-09-24_A.json`, `lwvs_desert_storm_2026-09-25_B.json`…
+
 **HTTP :**
 
 ```bash
-lwvs grab --iface ... --port ... --post https://mon-site/api/rankings --token XXX
+$env:LWVS_TOKEN = "XXX"     # une fois par session PowerShell
+lwvs grab --iface ... --port ... --post https://mon-site/api/rankings
+lwvs storm --post https://mon-site/api/rankings
 ```
 
 - `POST` par document (pas de lot), `Content-Type: application/json; charset=utf-8`
-- `Authorization: Bearer <token>` si `--token`
+- `Authorization: Bearer <token>` si `LWVS_TOKEN` ou `--token`. Préférer la
+  variable : tapé en argument, le jeton reste en clair dans l'historique du shell.
 - `Idempotency-Key: <sha256 du corps>`
 - `User-Agent: lwvs`
 - Le site répond 2xx pour accepter. Tout le reste est signalé à l'utilisateur.
@@ -416,8 +593,9 @@ tronque au premier.
 Pour dimensionner sans se tromper :
 
 - **~100 lignes** par document pour une alliance, ~200 si les deux camps ;
-- **6 documents** par capture aujourd'hui, davantage à mesure que des
-  statistiques s'ajoutent. Trois d'entre eux (`kill_rank`, `donation_*`)
+- **7 documents** par capture aujourd'hui, davantage à mesure que des
+  statistiques s'ajoutent. Quatre d'entre eux (`kill_rank`, `donation_*`,
+  `alliance_role`)
   viennent du **même message** : un seul écran capturé en alimente plusieurs ;
 - **~200 lignes** pour `thp_rank` avant filtrage — c'est le classement du
   serveur entier, le plus gros document de la série ;

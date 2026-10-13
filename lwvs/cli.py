@@ -7,6 +7,7 @@ fichier de donnees.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from . import capture, exporter, inspection, probe as probe_mod
@@ -261,6 +262,108 @@ def cmd_grab(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_storm(args: argparse.Namespace) -> int:
+    from . import gamecache, storm
+
+    kinds = None if args.kind == "all" else [f"{args.kind}_storm"]
+    since = storm.since_ms("all" if args.all else args.since)
+    try:
+        if args.list:
+            path = args.game_db or gamecache.default_db_path()
+            if path is None:
+                raise gamecache.CacheUnavailable(
+                    "game database not found under AppData\\LocalLow; --game-db")
+            reports, n, dups, bad = storm.load_reports(path, since_ms=since, kinds=kinds)
+            # Aucun pseudo : alliances, effectifs et resultat seulement.
+            issues = {"win": "victoire", "loss": "defaite", "?": "?"}
+            for r in reports:
+                s = storm.summary_of(r)
+                src = " (declared)" if s["declared"] else ""
+                print(f"  {storm.label_of(r):<34}{src:<11} {s['players']:>3} joueurs"
+                      f"  {s['side']} contre {s['opponents']}  {issues[s['result']]}")
+            print(f"\n{n} mail(s), {len(reports)} bataille(s), {dups} doublon(s),"
+                  f" {bad} illisible(s)  --  {path}")
+            return 0
+        result = storm.export_storm(
+            args.out, db_path=args.game_db, since_ms=since, kinds=kinds,
+            only_mine=not args.all_alliances, prefix=args.prefix,
+            post_url=args.post, token=args.token)
+    except gamecache.CacheUnavailable as exc:
+        print(f"erreur: {exc}", file=sys.stderr)
+        return 2
+
+    print(f"base du jeu : {result.db_path}")
+    print(f"  {result.mails} mail(s) de Storm, {result.duplicates} doublon(s),"
+          f" {result.unreadable} illisible(s)")
+    if result.own_label:
+        print(f"  ton alliance : {result.own_label}  (memorisee)")
+    for w in result.written:
+        print(f"  ecrit  {w.path}  ({w.records} records)")
+        if w.published is not None:
+            pub = w.published
+            verdict = f"HTTP {pub.status}" if pub.ok else f"ECHEC {pub.error or pub.status}"
+            print(f"         envoi {verdict}  cle {pub.key[:12]}...")
+            if pub.response.strip():
+                print(f"         reponse {pub.response.strip()[:200]}")
+    for label, why in result.skipped:
+        print(f"  ignore {label} : {why}")
+    if not result.written:
+        print("\n-> aucune bataille exportee sur la periode. --all ou --since"
+              " pour remonter plus loin, --list pour voir ce que contient le cache.")
+        return 1
+    return 0
+
+
+def cmd_trains(args: argparse.Namespace) -> int:
+    from . import gamecache, trains
+
+    since = trains.since_ms("all" if args.all else args.since)
+    try:
+        if args.list:
+            path = args.game_db or gamecache.default_db_path()
+            if path is None:
+                raise gamecache.CacheUnavailable(
+                    "game database not found under AppData\\LocalLow; --game-db")
+            runs, n, bad = trains.load_trains(path, since_ms=since)
+            # Aucun pseudo : jour, escorte, effectif et attaques seulement.
+            for r in runs:
+                s = trains.summary_of(r)
+                bought = " achete" if s["purchased"] else ""
+                trip = (f"{s['attacks']} attaque(s), {s['robbed']} pillage(s)"
+                        if s["arrived"] else "en route")
+                print(f"  {trains.label_of(r):<22}{bought:<8} {s['escort']:<9}"
+                      f" {s['passengers']:>3} passagers  {s['alliance']}  {trip}")
+            print(f"\n{n} mail(s), {len(runs)} train(s), {bad} illisible(s)  --  {path}")
+            return 0
+        result = trains.export_trains(
+            args.out, db_path=args.game_db, since_ms=since,
+            only_mine=not args.all_alliances, prefix=args.prefix,
+            post_url=args.post, token=args.token)
+    except gamecache.CacheUnavailable as exc:
+        print(f"erreur: {exc}", file=sys.stderr)
+        return 2
+
+    print(f"base du jeu : {result.db_path}")
+    print(f"  {result.mails} mail(s) de train, {result.unreadable} illisible(s)")
+    if result.own_label:
+        print(f"  ton alliance : {result.own_label}  (memorisee)")
+    for w in result.written:
+        print(f"  ecrit  {w.path}  ({w.records} records)")
+        if w.published is not None:
+            pub = w.published
+            verdict = f"HTTP {pub.status}" if pub.ok else f"ECHEC {pub.error or pub.status}"
+            print(f"         envoi {verdict}  cle {pub.key[:12]}...")
+            if pub.response.strip():
+                print(f"         reponse {pub.response.strip()[:200]}")
+    for label, why in result.skipped:
+        print(f"  ignore {label} : {why}")
+    if not result.written:
+        print("\n-> aucun train exporte sur la periode. --all ou --since"
+              " pour remonter plus loin, --list pour voir ce que contient le cache.")
+        return 1
+    return 0
+
+
 def cmd_inspect(args: argparse.Namespace) -> int:
     source = _build_source(args)
     # Le saver est branche en amont des filtres : il sauve TOUT, y compris les
@@ -454,9 +557,66 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--post", metavar="URL",
                    help="envoie aussi chaque classement a ce service "
                         "(voir docs/CONTRAT.md). Publie des donnees joueur.")
-    q.add_argument("--token", help="jeton Bearer pour --post")
+    q.add_argument("--token", default=os.environ.get("LWVS_TOKEN"),
+                   help="jeton Bearer pour --post. Prefere LWVS_TOKEN : tape ici,"
+                        " il reste en clair dans l'historique du shell")
     q.add_argument("--note")
     q.set_defaults(func=cmd_grab)
+
+    q = sub.add_parser(
+        "storm",
+        help="Desert Storm / Canyon Storm : lit les mails du cache du jeu -> JSON")
+    q.add_argument("-o", "--out", default="exports", help="dossier de sortie")
+    q.add_argument("--prefix", default="lwvs", help="prefixe des noms de fichier")
+    q.add_argument("--game-db", metavar="FICHIER",
+                   help="config.db du jeu (defaut : trouve sous AppData\\LocalLow)."
+                        " Ouvert en lecture seule.")
+    q.add_argument("--kind", choices=("all", "desert", "canyon"), default="all")
+    periode = q.add_mutually_exclusive_group()
+    periode.add_argument("--since", metavar="AAAA-MM-JJ",
+                         help="batailles a partir de cette date (UTC). Defaut :"
+                              " les 7 derniers jours")
+    periode.add_argument("--all", action="store_true",
+                         help="tout l'historique du cache")
+    q.add_argument("--all-alliances", action="store_true",
+                   help="tout le camp (alliees comprises), et les mails ou ton"
+                        " alliance n'apparait pas")
+    q.add_argument("--list", action="store_true",
+                   help="liste les batailles du cache sans rien ecrire (aucun pseudo)")
+    q.add_argument("--post", metavar="URL",
+                   help="envoie aussi chaque document a ce service. Publie des"
+                        " donnees joueur.")
+    q.add_argument("--token", default=os.environ.get("LWVS_TOKEN"),
+                   help="jeton Bearer pour --post. Prefere LWVS_TOKEN : tape ici,"
+                        " il reste en clair dans l'historique du shell")
+    q.set_defaults(func=cmd_storm)
+
+    q = sub.add_parser(
+        "trains",
+        help="trains d'alliance : conducteur, VIP / Guardian, lus dans les mails"
+             " du cache du jeu -> JSON")
+    q.add_argument("-o", "--out", default="exports", help="dossier de sortie")
+    q.add_argument("--prefix", default="lwvs", help="prefixe des noms de fichier")
+    q.add_argument("--game-db", metavar="FICHIER",
+                   help="config.db du jeu (defaut : trouve sous AppData\\LocalLow)."
+                        " Ouvert en lecture seule.")
+    periode = q.add_mutually_exclusive_group()
+    periode.add_argument("--since", metavar="AAAA-MM-JJ",
+                         help="trains a partir de cette date (UTC). Defaut :"
+                              " les 7 derniers jours")
+    periode.add_argument("--all", action="store_true",
+                         help="tout l'historique du cache")
+    q.add_argument("--all-alliances", action="store_true",
+                   help="aussi les trains d'une autre alliance (ancien chapitre)")
+    q.add_argument("--list", action="store_true",
+                   help="liste les trains du cache sans rien ecrire (aucun pseudo)")
+    q.add_argument("--post", metavar="URL",
+                   help="envoie aussi chaque document a ce service. Publie des"
+                        " donnees joueur.")
+    q.add_argument("--token", default=os.environ.get("LWVS_TOKEN"),
+                   help="jeton Bearer pour --post. Prefere LWVS_TOKEN : tape ici,"
+                        " il reste en clair dans l'historique du shell")
+    q.set_defaults(func=cmd_trains)
 
     q = sub.add_parser("inspect", help="cartographie le protocole (commandes, formes)")
     _add_source_args(q)

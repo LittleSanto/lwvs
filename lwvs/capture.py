@@ -49,7 +49,6 @@ __all__ = [
     "LiveSource",
     "PcapSource",
     "DirSource",
-    "iter_payloads",
     "discover_ports",
     "autodetect",
     "Detection",
@@ -404,10 +403,6 @@ class DirSource(CaptureSource):
                 compressed=False,
                 origin=rel,
             )
-
-
-def iter_payloads(source: CaptureSource) -> Iterator[Payload]:
-    return source.payloads()
 
 
 # ---------------------------------------------------------------------------

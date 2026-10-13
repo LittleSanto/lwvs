@@ -9,7 +9,8 @@ leur type peuvent remonter, via `inspection`.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from typing import Any
 
 __all__ = [
@@ -36,6 +37,21 @@ __all__ = [
     "ServerRankRow",
     "ServerRankMessage",
     "parse_message",
+    "MAIL_DESERT_STORM",
+    "MAIL_CANYON_STORM",
+    "STORM_KINDS",
+    "StormAlliance",
+    "StormRow",
+    "StormReport",
+    "parse_storm_mail",
+    "MAIL_TRAIN_PURCHASED",
+    "MAIL_TRAIN_DEPARTED",
+    "MAIL_TRAIN_ARRIVED",
+    "TRAIN_MAILS",
+    "TrainPerson",
+    "TrainRun",
+    "game_date",
+    "parse_train_mail",
 ]
 
 
@@ -126,11 +142,6 @@ class RankMessage:
     day: int | None
     raw_type: int | None
     rows: tuple[RankRow, ...] = ()
-
-    @property
-    def abbrs(self) -> set[str]:
-        """Les deux alliances du match arrivent dans le meme message."""
-        return {r.alliance_abbr for r in self.rows if r.alliance_abbr}
 
 
 def _as_int(v: Any) -> int | None:
@@ -576,11 +587,393 @@ def parse_message(obj: Any):
     return env.command, parser(env.body)
 
 
-def own_position(season: SeasonMessage | None) -> int | None:
-    """Ton alliance = celle du groupe dont la `position` egale celle de duelInfo."""
-    if season is None:
+# ---------------------------------------------------------------------------
+# Rapports de Desert Storm / Canyon Storm -- par MAIL, pas par commande
+# ---------------------------------------------------------------------------
+#
+# Source : la table `MailData` du cache client (voir `gamecache.py`), pas le
+# fil. Le contenu est le JSON `contents`, deja decode ; ce module n'en voit que
+# des dict. Le `type` du mail est le discriminant, comme le nom de commande
+# ailleurs.
+#
+# Etabli le 28/09/2026 contre les captures d'ecran des mails des 24 et
+# 25/09/2026, valeur par valeur (scores des joueurs, scores d'alliance, MVP) :
+#
+# Desert Storm (type 109)
+#   * `ranks[]` : `uid`, `name`, `score`, `rank` -- rang REEL, 1..n contigu,
+#     liste deja triee. Aucun `allianceId` par ligne : seule `abbr`.
+#   * `alliances[]` : les deux alliances, avec leur `score` et `alId`.
+#   * `result` : 1 = victoire, 0 = defaite (verifie : 215 835 contre 373 018
+#     -> 0 ; 298 773 contre 279 837 -> 1).
+#   * AUCUN marqueur d'equipe. Voir `_desert_team`.
+#
+# Canyon Storm (type 181)
+#   * `ranks[]` : `uid`, `name`, `allianceId`, `score` = total, et sa
+#     ventilation `battleScore` + `cooperationScore` (assistance) +
+#     `tacticsScore` (strategie). La somme est exacte pour 206 lignes sur 206.
+#   * PAS de champ de rang, et la liste n'est PAS triee. Le rang du jeu se
+#     recalcule par score decroissant sur TOUT le camp -- alliees comprises :
+#     c'est ce qui donne a l'ecran les trous 5, 6, 8, 9, 10, 13... quand la
+#     case "Mon Alliance" masque l'alliee. Verifie rang par rang.
+#   * `ranks[]` ne contient que TON camp, qui peut reunir deux alliances.
+#     `alliances[].role` dit le camp de chacune, `obj.role` le tien.
+#   * Le score et l'effectif de chaque CAMP sont dans `landlord` (role 1) et
+#     `farmer` (role 2) : 258 747 et 38 pour le "38/40" de l'ecran du 24/09.
+#   * L'equipe EST dans le mail : le parametre du titre. Voir `_CANYON_TEAMS`.
+#
+# Participation : figurer dans `ranks[]`, c'est avoir participe. `ranks` peut
+# depasser l'effectif affiche (44 lignes pour "38/40") : il compte aussi ceux
+# qui sont entres puis sortis. Une absence ne dit pas "inscrit mais absent" --
+# le mail ne porte pas la liste des inscrits.
+
+MAIL_DESERT_STORM = 109
+MAIL_CANYON_STORM = 181
+#: type de mail -> identifiant stable de l'evenement.
+STORM_KINDS: dict[int, str] = {
+    MAIL_DESERT_STORM: "desert_storm",
+    MAIL_CANYON_STORM: "canyon_storm",
+}
+
+#: Parametre du titre -> equipe. CONFIRME sur les mails du 24/09/2026 : le titre
+#: affiche "Force Operationnelle A" pour `_5` (camp GolD + SynD contre ForD) et
+#: "B" pour `_6` (GolD contre VOXM + TIWA). Un parametre absent de la table
+#: laisse l'equipe inconnue : deviner serait pire.
+_CANYON_TEAMS = {
+    "YiBianJinQu_trivial_tips_5": "A",
+    "YiBianJinQu_trivial_tips_6": "B",
+}
+
+#: Desert Storm : le mail ne porte AUCUN marqueur d'equipe. La correspondance
+#: est DECLAREE par l'alliance (28/09/2026) : le creneau du soir est l'equipe A,
+#: celui du debut d'apres-midi l'equipe B. Elle se lit sur l'heure UTC du mail,
+#: constante d'une saison a l'autre (11:30 et 20:30 UTC, soit 13:30 et 22:30
+#: l'ete a Paris, 12:30 et 21:30 l'hiver). C'est une affirmation humaine, pas
+#: une mesure : elle sort marquee `team_source: "declared"`.
+_DESERT_EVENING_FROM_UTC_HOUR = 16
+
+
+def _desert_team(created_ms: int) -> str:
+    hour = (created_ms // 3_600_000) % 24
+    return "A" if hour >= _DESERT_EVENING_FROM_UTC_HOUR else "B"
+
+
+@dataclass(frozen=True)
+class StormAlliance:
+    alliance_id: str | None
+    abbr: str | None
+    name: str | None
+    server_id: int | None
+    #: Desert seulement : le score de l'alliance. Canyon ne le porte pas ici.
+    score: int | None = None
+
+
+@dataclass(frozen=True)
+class StormRow:
+    uid: str | None
+    name: str | None
+    score: int | None
+    #: Rang du jeu : lu (Desert) ou recalcule sur tout le camp (Canyon).
+    game_rank: int | None
+    alliance_id: str | None
+    alliance_abbr: str | None
+    # Canyon seulement : la ventilation de `score`.
+    battle_score: int | None = None
+    assist_score: int | None = None
+    strategy_score: int | None = None
+
+
+@dataclass(frozen=True)
+class StormReport:
+    kind: str                       # "desert_storm" | "canyon_storm"
+    mail_uid: str
+    created_ms: int
+    team: str | None                # "A" | "B" | None
+    team_source: str | None         # "message" | "declared"
+    won: bool | None
+    #: Le camp du destinataire (une ou deux alliances), puis l'adversaire.
+    own_side: tuple[StormAlliance, ...] = ()
+    other_side: tuple[StormAlliance, ...] = ()
+    rows: tuple[StormRow, ...] = ()
+    #: Score et effectif de chaque camp. Desert : le score de l'alliance, pas
+    #: d'effectif transmis.
+    own_score: int | None = None
+    other_score: int | None = None
+    own_members: int | None = None
+    other_members: int | None = None
+
+
+def _storm_alliance(entry: dict[str, Any]) -> StormAlliance:
+    return StormAlliance(
+        alliance_id=_as_id(entry.get("alId")),
+        abbr=_as_str(entry.get("abbr")),
+        name=_as_str(entry.get("name")),
+        server_id=_as_int(entry.get("serverId")),
+        score=_as_int(entry.get("score")),
+    )
+
+
+def _dicts(v: Any) -> list[dict[str, Any]]:
+    return [x for x in v if isinstance(x, dict)] if isinstance(v, list) else []
+
+
+def _title_param(title: Any) -> str | None:
+    try:
+        params = title["h"]["title"]["dialog"]["params"]
+    except (KeyError, TypeError):
         return None
-    for row in season.rows:
-        if row.scope == "current":
-            return row.position
+    for p in _dicts(params):
+        text = _as_str(p.get("text"))
+        if text:
+            return text
     return None
+
+
+def parse_storm_mail(mail_type: int, mail_uid: str, created_ms: int,
+                     title: Any, contents: Any) -> StormReport | None:
+    """Rapport de Storm, ou None si ce mail n'en est pas un lisible."""
+    kind = STORM_KINDS.get(mail_type)
+    if kind is None or not isinstance(contents, dict):
+        return None
+    obj = contents.get("obj")
+    if not isinstance(obj, dict) or not isinstance(obj.get("ranks"), list):
+        return None
+    alliances = _dicts(obj.get("alliances"))
+    ranks = _dicts(obj.get("ranks"))
+
+    if mail_type == MAIL_CANYON_STORM:
+        mine = _as_int(obj.get("role"))
+        own = tuple(_storm_alliance(a) for a in alliances
+                    if mine is not None and _as_int(a.get("role")) == mine)
+        other = tuple(_storm_alliance(a) for a in alliances
+                      if mine is None or _as_int(a.get("role")) != mine)
+        by_id = {a.alliance_id: a for a in own + other if a.alliance_id}
+        # Tri stable : a score egal, l'ordre du mail departage, faute de mieux.
+        ordered = sorted(ranks, key=lambda e: -(_as_int(e.get("score")) or 0))
+        rows = []
+        for i, entry in enumerate(ordered):
+            aid = _as_id(entry.get("allianceId"))
+            rows.append(StormRow(
+                uid=_as_id(entry.get("uid")),
+                name=_as_str(entry.get("name")),
+                score=_as_int(entry.get("score")),
+                game_rank=i + 1,
+                alliance_id=aid,
+                alliance_abbr=_as_str(entry.get("abbr"))
+                or (by_id[aid].abbr if aid in by_id else None),
+                battle_score=_as_int(entry.get("battleScore")),
+                assist_score=_as_int(entry.get("cooperationScore")),
+                strategy_score=_as_int(entry.get("tacticsScore")),
+            ))
+        team = _CANYON_TEAMS.get(_title_param(title) or "")
+        camps = {1: obj.get("landlord"), 2: obj.get("farmer")}
+        mine_camp = camps.get(mine) if isinstance(camps.get(mine), dict) else {}
+        theirs = camps.get(3 - mine) if mine in (1, 2) else None
+        theirs = theirs if isinstance(theirs, dict) else {}
+        return StormReport(
+            kind=kind, mail_uid=mail_uid, created_ms=created_ms,
+            team=team, team_source="message" if team else None,
+            won=obj.get("isWin") if isinstance(obj.get("isWin"), bool) else None,
+            own_side=own, other_side=other, rows=tuple(rows),
+            own_score=_as_int(mine_camp.get("score")),
+            other_score=_as_int(theirs.get("score")),
+            own_members=_as_int(mine_camp.get("member")),
+            other_members=_as_int(theirs.get("member")))
+
+    # Desert Storm : une alliance par camp. Les lignes n'ont que `abbr` ; on la
+    # rattache a `alId` via la liste des alliances du MEME mail, seulement si
+    # l'abreviation y est sans ambiguite.
+    every = [_storm_alliance(a) for a in alliances]
+    abbr_count: dict[str, int] = {}
+    for a in every:
+        if a.abbr:
+            abbr_count[a.abbr] = abbr_count.get(a.abbr, 0) + 1
+    by_abbr = {a.abbr: a for a in every if a.abbr and abbr_count[a.abbr] == 1}
+    rows = []
+    for entry in ranks:
+        abbr = _as_str(entry.get("abbr"))
+        rows.append(StormRow(
+            uid=_as_id(entry.get("uid")),
+            name=_as_str(entry.get("name")),
+            score=_as_int(entry.get("score")),
+            game_rank=_as_int(entry.get("rank")),
+            alliance_id=by_abbr[abbr].alliance_id if abbr in by_abbr else None,
+            alliance_abbr=abbr,
+        ))
+    present = {r.alliance_abbr for r in rows if r.alliance_abbr}
+    result = _as_int(obj.get("result"))
+    own = tuple(a for a in every if a.abbr in present)
+    other = tuple(a for a in every if a.abbr not in present)
+    return StormReport(
+        kind=kind, mail_uid=mail_uid, created_ms=created_ms,
+        team=_desert_team(created_ms), team_source="declared",
+        won=None if result is None else result == 1,
+        own_side=own, other_side=other, rows=tuple(rows),
+        own_score=own[0].score if len(own) == 1 else None,
+        other_score=other[0].score if len(other) == 1 else None)
+
+
+# ---------------------------------------------------------------------------
+# Trains d'alliance -- par MAIL, comme Storm
+# ---------------------------------------------------------------------------
+#
+# Etabli le 11/10/2026 sur la boite du poste de reference : 71 trains, du
+# 14/03 au 10/10/2026. Chaque membre recoit les mails de CHAQUE train de son
+# alliance, quel que soit son role -- d'ou un train par jour dans la boite.
+#
+#   130  depart (dialogue 458512, l'heure d'arrivee en parametre). `obj` est
+#        l'objet train lui-meme, `marchInfo.isEnd` = false.
+#   128  arrivee (458513). `obj.trainObj` = le meme objet, final, et
+#        `obj.history[]` = les attaques subies.
+#   127  annonce d'un train ACHETE (458511) : conducteur et heure de depart,
+#        4 h plus tard, sans objet. Le train annonce porte `buyFlag` = 1. Les
+#        trois cas observes tombent un jour qui a deja eu son train quotidien.
+#   129  MES recompenses (passager 1028, VIP/Guardian 1030) : propres au
+#        destinataire, inutiles ici.
+#
+# Le meme `uuid` relie 130 et 128 (69 trains sur 69 arrives). Les deux 130
+# sans 128 : un train encore en route, un dont l'arrivee a expire du cache.
+#
+# Verifie sur les 71 trains :
+#   * Le conducteur = `ownerId` = `uid` = l'unique passager du wagon 0
+#     (`seatNum` 1) = l'utilisateur du titre. 71/71.
+#   * `vipInfo` = le VIP **ou** le Guardian : jamais un passager, jamais le
+#     conducteur. `vipType` tranche, prouve par l'escouade de defense
+#     (`formation`), dont les `heroUuid` sont propres a un joueur. Sous
+#     l'hypothese "vipType 1 = la formation est celle de `vipInfo`" -- un
+#     Guardian defend le train avec SES heros --, 43 paires de trains
+#     partageant des heros sur 43 designent le meme joueur ; sous l'hypothese
+#     inverse, 3 sur 43. Avec `vipType` 0, la formation est celle du
+#     conducteur : `vipInfo` est un VIP, simple beneficiaire. `vipInfo`
+#     absent : ni l'un ni l'autre (2 trains).
+#   * `history[].isWin` est du point de vue du TRAIN : `robTimes` = nombre
+#     d'attaques a isWin = false (69/69), et `completeness` = 1 - 0,1 x
+#     `robTimes` (69/69 ; deux pillages au plus).
+#   * `uuid` depasse 2^53 : garde en TEXTE, comme `uid`.
+#
+# NON etabli : `selfSelect` (false 3 fois sur 71). Hypothese : conducteur
+# designe par un R4/R5 (true) contre tire au sort par le jeu (false). Transmis
+# brut, sous son nom, sans sens qui le ferait passer pour une mesure.
+
+MAIL_TRAIN_PURCHASED = 127
+MAIL_TRAIN_DEPARTED = 130
+MAIL_TRAIN_ARRIVED = 128
+#: Les seuls types qui portent l'objet train.
+TRAIN_MAILS = (MAIL_TRAIN_DEPARTED, MAIL_TRAIN_ARRIVED)
+
+#: `vipInfo.vipType` -> role de l'escorte. Une valeur absente de la table
+#: laisse le role inconnu : deviner serait pire.
+_ESCORT_ROLES = {0: "vip", 1: "guardian"}
+
+#: L'heure du serveur de Last War est UTC-2 : la journee de jeu -- celle du
+#: train quotidien -- change a 02:00 UTC. Coherent avec les trois achats
+#: observes : un train parti a 01:14 UTC suit l'annonce d'achat faite apres le
+#: train quotidien de 21:04 UTC la veille ; en jour UTC, les deux tomberaient
+#: deux jours differents et le lendemain aurait l'air d'en avoir deux.
+_GAME_DAY_SHIFT_MS = 2 * 3_600_000
+
+
+def game_date(ms: int) -> str:
+    """Instant UTC (ms) -> jour du jeu, AAAA-MM-JJ (heure du serveur, UTC-2)."""
+    when = datetime.fromtimestamp((ms - _GAME_DAY_SHIFT_MS) / 1000, tz=timezone.utc)
+    return f"{when:%Y-%m-%d}"
+
+
+@dataclass(frozen=True)
+class TrainPerson:
+    uid: str | None
+    name: str | None
+    alliance_abbr: str | None
+
+
+@dataclass(frozen=True)
+class TrainRun:
+    train_id: str
+    mail_uid: str
+    #: Emission du mail : le depart (130) ou l'arrivee (128).
+    created_ms: int
+    arrived: bool
+    departed_ms: int | None
+    #: Arrivee reelle si `arrived`, prevue sinon.
+    arrival_ms: int | None
+    conductor: TrainPerson
+    #: Le VIP ou le Guardian, selon `escort_role`. None : aucun designe.
+    escort: TrainPerson | None
+    escort_role: str | None          # "vip" | "guardian" | None (inconnu)
+    purchased: bool | None
+    self_select: bool | None
+    alliance_id: str | None
+    alliance_abbr: str | None
+    alliance_name: str | None
+    server_id: int | None
+    #: Hors conducteur, qui occupe seul le wagon 0.
+    passengers: int = 0
+    # Arrivee seulement : pillages, cargaison restante, attaques subies.
+    rob_times: int | None = None
+    completeness: float | None = None
+    attacks: int | None = None
+    attacks_repelled: int | None = None
+
+
+def _person(entry: Any) -> TrainPerson | None:
+    if not isinstance(entry, dict) or not _as_id(entry.get("uid")):
+        return None
+    return TrainPerson(uid=_as_id(entry.get("uid")), name=_as_str(entry.get("name")),
+                       alliance_abbr=_as_str(entry.get("abbr")))
+
+
+def _as_float(v: Any) -> float | None:
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return float(v)
+    return None
+
+
+def parse_train_mail(mail_type: int, mail_uid: str, created_ms: int,
+                     contents: Any) -> TrainRun | None:
+    """Train d'alliance, ou None si ce mail n'en porte pas un lisible."""
+    if mail_type not in TRAIN_MAILS or not isinstance(contents, dict):
+        return None
+    obj = contents.get("obj")
+    if not isinstance(obj, dict):
+        return None
+    arrived = mail_type == MAIL_TRAIN_ARRIVED
+    train = obj.get("trainObj") if arrived else obj
+    if not isinstance(train, dict):
+        return None
+    train_id = _as_id(train.get("uuid"))
+    owner = _as_id(train.get("ownerId")) or _as_id(train.get("uid"))
+    if not train_id or not owner:
+        return None
+    march = train.get("marchInfo") if isinstance(train.get("marchInfo"), dict) else {}
+    seated = [p for c in _dicts(march.get("carriageList"))
+              for p in _dicts(c.get("passengerList"))]
+    # Le nom du conducteur : sur l'objet train, sinon sur son siege.
+    seat = next((p for p in seated if _as_id(p.get("uid")) == owner), {})
+    conductor = TrainPerson(
+        uid=owner, name=_as_str(train.get("name")) or _as_str(seat.get("name")),
+        alliance_abbr=_as_str(train.get("abbr")) or _as_str(seat.get("abbr")))
+    vip = train.get("vipInfo")
+    escort = _person(vip)
+    buy = _as_int(train.get("buyFlag"))
+    select = train.get("selfSelect")
+    run = TrainRun(
+        train_id=train_id, mail_uid=mail_uid, created_ms=created_ms, arrived=arrived,
+        departed_ms=_as_int(train.get("sendTime")),
+        arrival_ms=_as_int(train.get("arriveTime")),
+        conductor=conductor, escort=escort,
+        escort_role=_ESCORT_ROLES.get(_as_int(vip.get("vipType"))) if escort else None,
+        purchased=None if buy is None else buy == 1,
+        self_select=select if isinstance(select, bool) else None,
+        alliance_id=_as_id(train.get("allianceId")),
+        alliance_abbr=_as_str(train.get("abbr")),
+        alliance_name=_as_str(train.get("alliancename")),
+        server_id=_as_int(train.get("serverId")),
+        passengers=sum(1 for p in seated if _as_id(p.get("uid")) != owner),
+    )
+    if not arrived:
+        return run
+    history = _dicts(obj.get("history"))
+    return replace(run,
+                   rob_times=_as_int(march.get("robTimes")),
+                   completeness=_as_float(train.get("completeness")),
+                   attacks=len(history),
+                   attacks_repelled=sum(1 for h in history if h.get("isWin") is True))

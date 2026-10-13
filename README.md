@@ -296,11 +296,13 @@ même contrat.
 ### Envoyer vers un site de suivi
 
 ```bash
-lwvs grab --iface ... --port ... -o exports/ --post https://mon-site/api/rankings --token XXX
+$env:LWVS_TOKEN = "XXX"     # une fois par session PowerShell
+lwvs grab --iface ... --port ... -o exports/ --post https://mon-site/api/rankings
 ```
 
 Un `POST` par classement, `Content-Type: application/json; charset=utf-8`,
-`Authorization: Bearer` si `--token`, et `Idempotency-Key` = sha256 du corps.
+`Authorization: Bearer` si `LWVS_TOKEN` (ou `--token`, qui reste en clair dans
+l'historique du shell), et `Idempotency-Key` = sha256 du corps.
 **Le corps HTTP est octet pour octet le contenu du fichier JSON** — un seul
 format, deux transports, et c'est vérifié par un test.
 

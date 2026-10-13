@@ -33,7 +33,8 @@ from typing import Any
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from . import __version__, capture, events as events_mod, exporter, identity, theme
+from . import (__version__, capture, events as events_mod, exporter, gamecache,
+               identity, storm, theme, trains)
 from .capture import LiveSource, TsharkNotFound
 from .publish import publish
 from .ingest import ingest
@@ -174,6 +175,11 @@ class App:
         #: tshark introuvable : la capture est impossible et il faut le DIRE,
         #: pas laisser une trace de pile dans le journal (cf. `_spawn`).
         self._tshark_missing = False
+        #: Base du jeu pour Storm. None = trouvee sous AppData\LocalLow ; la
+        #: preference ne sert qu'aux postes ou le jeu est installe ailleurs.
+        self.storm_db: str | None = self.prefs.get("storm_game_db") or None
+        self._storm_rows: list[dict[str, Any]] = []
+        self._train_rows: list[dict[str, Any]] = []
         self._vars(keep)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -188,6 +194,8 @@ class App:
         # l'annuler, sinon il survit a la fenetre et touche des widgets morts.
         self._poll_id: str | None = self.root.after(_POLL_MS, self._drain)
         self._load_interfaces()
+        self._refresh_storm()
+        self._refresh_trains()
 
     # -- etat persistant --------------------------------------------------
     def _vars(self, keep: bool | None) -> None:
@@ -207,6 +215,10 @@ class App:
         self.autosend_var = tk.BooleanVar(value=bool(self.prefs.get("autosend", False)))
         self.keep_token_var = tk.BooleanVar(
             value=bool(self.prefs.get("keep_token", False)))
+        self.storm_since_var = tk.StringVar(value=self.prefs.get("storm_since", ""))
+        self.storm_state_var = tk.StringVar(value="reading the game's mailbox…")
+        self.trains_since_var = tk.StringVar(value=self.prefs.get("trains_since", ""))
+        self.trains_state_var = tk.StringVar(value="reading the game's mailbox…")
 
     def _restore_geometry(self) -> None:
         remembered = self.prefs.get("geometry", "")
@@ -403,8 +415,23 @@ class App:
 
     def _build_feeds(self, parent: tk.Frame) -> None:
         pal, fonts = self.pal, self.fonts
-        outer, body = theme.card(parent, pal, fonts, "What was seen", step="3")
+        outer, card_body = theme.card(parent, pal, fonts, "Rankings", step="3")
         outer.pack(fill="both", expand=True, pady=(0, 12))
+
+        # Deux onglets, pas deux cartes : la colonne de droite n'a pas la
+        # hauteur d'une troisieme carte sans ecraser le journal (mesure : 1 105 px
+        # demandes pour une fenetre minimale de 780). Et les deux sources sont
+        # vraiment distinctes -- l'une vient de la capture, l'autre du jeu.
+        self.results_tabs = ttk.Notebook(card_body, style="Card.TNotebook")
+        self.results_tabs.pack(fill="both", expand=True)
+        body = tk.Frame(self.results_tabs, background=pal.surface)
+        storm_tab = tk.Frame(self.results_tabs, background=pal.surface)
+        self.results_tabs.add(body, text="What the capture saw")
+        self.results_tabs.add(storm_tab, text="Storm results")
+        self._build_storm(storm_tab)
+        trains_tab = tk.Frame(self.results_tabs, background=pal.surface)
+        self.results_tabs.add(trains_tab, text="Trains")
+        self._build_trains(trains_tab)
 
         holder = tk.Frame(body, background=pal.surface)
         holder.pack(fill="both", expand=True)
@@ -480,6 +507,120 @@ class App:
         theme.Tooltip(self.exportall_btn,
                       "Writes one file per ready ranking   ·   Ctrl+Shift+E",
                       pal, fonts)
+
+    def _build_storm(self, body: tk.Frame) -> None:
+        """Desert / Canyon Storm : hors capture, lu dans la base du jeu.
+
+        Onglet a part, et non des lignes du tableau de la capture : ce tableau
+        dit ce qu'une CAPTURE a vu, et les mails ne passent jamais sur le fil
+        quand on les ouvre. Rien ici ne depend de tshark.
+        """
+        pal, fonts = self.pal, self.fonts
+        theme.label(body, pal, fonts, kind="muted",
+                    text="Read from the game's own mailbox on this PC — no capture "
+                         "needed. One battle per team: Canyon on Thursday, Desert "
+                         "on Friday.", wraplength=520).pack(fill="x", pady=(0, 10))
+
+        bar = tk.Frame(body, background=pal.surface)
+        bar.pack(fill="x")
+        theme.label(bar, pal, fonts, "Since", kind="muted").pack(side="left")
+        since = ttk.Entry(bar, textvariable=self.storm_since_var, width=11)
+        since.pack(side="left", padx=(6, 6))
+        since.bind("<Return>", lambda _e: self._refresh_storm())
+        theme.Tooltip(since, "empty = last 7 days\nYYYY-MM-DD = from that day\n"
+                             "all = the whole mailbox", pal, fonts)
+        ttk.Button(bar, text="↻", width=3, style="Ghost.TButton",
+                   command=self._refresh_storm).pack(side="left")
+        self.storm_send_btn = ttk.Button(bar, text="Send", state="disabled",
+                                         command=self._storm_send)
+        self.storm_send_btn.pack(side="right")
+        theme.Tooltip(self.storm_send_btn,
+                      "Writes one JSON per battle, then sends them to the site\n"
+                      "(URL and token of « Send to the site »)", pal, fonts)
+        self.storm_export_btn = ttk.Button(bar, text="Export…", state="disabled",
+                                           style="Accent.TButton",
+                                           command=self._storm_export)
+        self.storm_export_btn.pack(side="right", padx=8)
+        theme.Tooltip(self.storm_export_btn, "One JSON file per battle", pal, fonts)
+
+        holder = tk.Frame(body, background=pal.surface)
+        holder.pack(fill="both", expand=True, pady=(10, 0))
+        self.storm_tree = ttk.Treeview(
+            holder, columns=("team", "players", "camps", "result"),
+            show="tree headings", height=6, selectmode="none")
+        for col, text, width, anchor in (("#0", "Battle", 190, "w"),
+                                         ("team", "Team", 90, "w"),
+                                         ("players", "Players", 70, "e"),
+                                         ("camps", "Camps", 200, "w"),
+                                         ("result", "Result", 60, "w")):
+            self.storm_tree.heading(col, text=text, anchor=anchor)
+            self.storm_tree.column(col, width=width, anchor=anchor,
+                                   stretch=col in ("#0", "camps"))
+        self.storm_tree.tag_configure("loss", foreground=pal.muted)
+        scroll = ttk.Scrollbar(holder, style="Slim.Vertical.TScrollbar",
+                               command=self.storm_tree.yview)
+        self.storm_tree.configure(yscrollcommand=scroll.set)
+        self.storm_tree.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+
+        theme.label(body, pal, fonts, kind="muted", textvariable=self.storm_state_var,
+                    wraplength=520).pack(fill="x", pady=(8, 0))
+
+    def _build_trains(self, body: tk.Frame) -> None:
+        """Trains d'alliance : conducteur, VIP ou Guardian, lus dans les mails.
+
+        Meme source et meme discipline que Storm. Le tableau ne montre aucun
+        pseudo : qui conduisait sort par l'export, pas par l'ecran.
+        """
+        pal, fonts = self.pal, self.fonts
+        theme.label(body, pal, fonts, kind="muted",
+                    text="Read from the game's own mailbox on this PC — no capture "
+                         "needed. One line per train: conductor, VIP or Guardian, "
+                         "attacks.", wraplength=520).pack(fill="x", pady=(0, 10))
+
+        bar = tk.Frame(body, background=pal.surface)
+        bar.pack(fill="x")
+        theme.label(bar, pal, fonts, "Since", kind="muted").pack(side="left")
+        since = ttk.Entry(bar, textvariable=self.trains_since_var, width=11)
+        since.pack(side="left", padx=(6, 6))
+        since.bind("<Return>", lambda _e: self._refresh_trains())
+        theme.Tooltip(since, "empty = last 7 days\nYYYY-MM-DD = from that day\n"
+                             "all = the whole mailbox", pal, fonts)
+        ttk.Button(bar, text="↻", width=3, style="Ghost.TButton",
+                   command=self._refresh_trains).pack(side="left")
+        self.trains_send_btn = ttk.Button(bar, text="Send", state="disabled",
+                                          command=self._trains_send)
+        self.trains_send_btn.pack(side="right")
+        theme.Tooltip(self.trains_send_btn,
+                      "Writes one JSON per train, then sends them to the site\n"
+                      "(URL and token of « Send to the site »)", pal, fonts)
+        self.trains_export_btn = ttk.Button(bar, text="Export…", state="disabled",
+                                            style="Accent.TButton",
+                                            command=self._trains_export)
+        self.trains_export_btn.pack(side="right", padx=8)
+        theme.Tooltip(self.trains_export_btn, "One JSON file per train", pal, fonts)
+
+        holder = tk.Frame(body, background=pal.surface)
+        holder.pack(fill="both", expand=True, pady=(10, 0))
+        self.trains_tree = ttk.Treeview(
+            holder, columns=("escort", "passengers", "trip"),
+            show="tree headings", height=6, selectmode="none")
+        for col, text, width, anchor in (("#0", "Train (game day)", 220, "w"),
+                                         ("escort", "Escort", 90, "w"),
+                                         ("passengers", "Passengers", 80, "e"),
+                                         ("trip", "Trip", 200, "w")):
+            self.trains_tree.heading(col, text=text, anchor=anchor)
+            self.trains_tree.column(col, width=width, anchor=anchor,
+                                    stretch=col in ("#0", "trip"))
+        self.trains_tree.tag_configure("enroute", foreground=pal.muted)
+        scroll = ttk.Scrollbar(holder, style="Slim.Vertical.TScrollbar",
+                               command=self.trains_tree.yview)
+        self.trains_tree.configure(yscrollcommand=scroll.set)
+        self.trains_tree.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+
+        theme.label(body, pal, fonts, kind="muted", textvariable=self.trains_state_var,
+                    wraplength=520).pack(fill="x", pady=(8, 0))
 
     def _build_send(self, parent: tk.Frame) -> None:
         pal, fonts = self.pal, self.fonts
@@ -574,6 +715,8 @@ class App:
         self.log.see("end")
         self.log.configure(state="disabled")
         self._refresh_feeds()
+        self._refresh_storm()
+        self._refresh_trains()
 
     # -- utilitaires UI ---------------------------------------------------
     def _say(self, text: str, kind: str = "") -> None:
@@ -733,9 +876,13 @@ class App:
                 self.q.put(Msg("progress", (stats.payloads, stats.decoded,
                                             stats.exact, stats.failed,
                                             dict(counters.commands))))
-            with Store(db) as store:
-                result = ingest(source, store, note="gui", on_progress=on_progress)
-            self.q.put(Msg("done", result))
+            result = None
+            try:
+                with Store(db) as store:
+                    result = ingest(source, store, note="gui", on_progress=on_progress)
+            finally:
+                # Meme en cas d'echec : sans "done", Start resterait grise.
+                self.q.put(Msg("done", result))
         self._spawn(work)
 
     def _stop(self) -> None:
@@ -807,10 +954,31 @@ class App:
             self._update_seen(commands)
         elif msg.kind == "sent":
             self._sync_buttons()
-            self._say("send complete.", "ok")
-            self._status("send complete", "ok")
+            if msg.payload:
+                self._say("send complete.", "ok")
+                self._status("send complete", "ok")
         elif msg.kind == "done":
             self._finish(msg.payload)
+        elif msg.kind == "storm_list":
+            self._storm_listed(msg.payload)
+        elif msg.kind == "storm_unavailable":
+            self._storm_rows = []
+            self.storm_tree.delete(*self.storm_tree.get_children())
+            self.storm_state_var.set(f"⚠ {msg.payload}")
+            self._sync_storm()
+        elif msg.kind == "storm_done":
+            self._sync_storm()
+            self._status(*msg.payload)
+        elif msg.kind == "train_list":
+            self._trains_listed(msg.payload)
+        elif msg.kind == "train_unavailable":
+            self._train_rows = []
+            self.trains_tree.delete(*self.trains_tree.get_children())
+            self.trains_state_var.set(f"⚠ {msg.payload}")
+            self._sync_trains()
+        elif msg.kind == "train_done":
+            self._sync_trains()
+            self._status(*msg.payload)
 
     def _guard(self, exact: int, decoded: int) -> None:
         pct = 100.0 * exact / decoded if decoded else 0.0
@@ -827,9 +995,11 @@ class App:
                else "  ⚠ below 100 %, you are not decoding what you think"))
 
     def _finish(self, result) -> None:
-        self.snapshot_id = None if result.dropped else result.snapshot_id
         self.start_btn.configure(state="normal")
         self.stop_btn.configure(state="disabled")
+        if result is None:      # le worker a echoue : l'erreur suit dans le journal
+            return
+        self.snapshot_id = None if result.dropped else result.snapshot_id
         st, c = result.stats, result.counters
         self._guard(st.exact, st.decoded)
         self._status(
@@ -1061,19 +1231,24 @@ class App:
         self._say(f"sending {len(jobs)} ranking(s) to {url}…")
 
         def work():
-            with Store(db) as store:
-                for feed, day, alliance in jobs:
-                    try:
-                        payload = self._payload(store, feed, day, snapshot, alliance,
-                                                declared)
-                    except ValueError as exc:
-                        self.q.put(Msg("log", f"  {feed.key}: refused — {exc}"))
-                        continue
-                    res = publish(payload, url, token=token)
-                    tag = "OK" if res.ok else "FAILED"
-                    self.q.put(Msg("log", f"  {feed.key}: {tag} HTTP {res.status}"
-                                          f"  {res.response.strip()[:180] or res.error}"))
-            self.q.put(Msg("sent", None))
+            ok = False
+            try:
+                with Store(db) as store:
+                    for feed, day, alliance in jobs:
+                        try:
+                            payload = self._payload(store, feed, day, snapshot,
+                                                    alliance, declared)
+                        except ValueError as exc:
+                            self.q.put(Msg("log", f"  {feed.key}: refused — {exc}"))
+                            continue
+                        res = publish(payload, url, token=token)
+                        tag = "OK" if res.ok else "FAILED"
+                        self.q.put(Msg("log", f"  {feed.key}: {tag} HTTP {res.status}"
+                                              f"  {res.response.strip()[:180] or res.error}"))
+                ok = True
+            finally:
+                # Meme en cas d'echec : sans "sent", Send resterait grise.
+                self.q.put(Msg("sent", ok))
         self._spawn(work)
 
     def _payload(self, store: Store, feed: exporter.Feed, day: int | None,
@@ -1086,7 +1261,7 @@ class App:
         jour, event = declared
         return exporter.build_records(rows, feed.dataset, mode=feed.mode,
                                       scope=feed.scope, metric=feed.metric,
-                                      context=store.duel_context(snapshot),
+                                      context=exporter.context_for(store, snapshot),
                                       declared_day=jour, event=event)
 
     def _remember_send(self) -> None:
@@ -1119,6 +1294,251 @@ class App:
         except ValueError as exc:
             self._say(f"[error] export refused: {exc}")
             messagebox.showerror(TITLE, str(exc))
+
+
+    # -- Storm (mails du jeu) ----------------------------------------------
+    # Meme discipline que la capture : les variables Tk sont lues ICI, sur le
+    # thread UI, et le worker ne recoit que des valeurs simples.
+
+    def _refresh_storm(self) -> None:
+        text = self.storm_since_var.get()
+        try:
+            since = storm.since_ms(text)
+        except ValueError as exc:
+            self.storm_state_var.set(f"⚠ {exc}")
+            return
+        self.prefs["storm_since"] = text.strip()
+        _save_prefs(self.db_path, self.prefs)
+        db = self.storm_db
+        self.storm_state_var.set("reading the game's mailbox…")
+
+        def work():
+            try:
+                path = db or gamecache.default_db_path()
+                if path is None:
+                    raise gamecache.CacheUnavailable(
+                        "game database not found under AppData\\LocalLow — has "
+                        "the game been run on this PC, with this Windows account?")
+                reports, n, dups, bad = storm.load_reports(path, since_ms=since)
+            except gamecache.CacheUnavailable as exc:
+                # Un prerequis, pas une panne : une phrase, pas une trace de pile.
+                self.q.put(Msg("storm_unavailable", str(exc)))
+                return
+            # Seulement le resume affichable : aucun pseudo ne quitte le worker.
+            self.q.put(Msg("storm_list",
+                           ([storm.summary_of(r) for r in reports], n, dups, bad)))
+        self._spawn(work)
+
+    def _storm_listed(self, payload) -> None:
+        rows, n, dups, bad = payload
+        self._storm_rows = rows
+        tree = self.storm_tree
+        tree.delete(*tree.get_children())
+        for i, r in enumerate(reversed(rows)):          # le plus recent en haut
+            kind = "Canyon" if r["kind"] == "canyon_storm" else "Desert"
+            team = (r["team"] or "?") + ("  (declared)" if r["declared"] else "")
+            tree.insert("", "end", iid=f"storm:{i}", text=f"{kind}  ·  {r['date']}",
+                        tags=("loss",) if r["result"] == "loss" else (),
+                        values=(team, r["players"],
+                                f"{r['side']}  vs  {r['opponents']}", r["result"]))
+        state = f"{len(rows)} battle(s) in the period"
+        if dups:
+            state += f"  ·  {dups} duplicate mail(s) merged"
+        if bad:
+            state += f"  ·  {bad} unreadable"
+        if any(r["declared"] for r in rows):
+            state += ("  ·  Desert team is declared, not in the mail: "
+                      "evening = A, early afternoon = B")
+        if not rows:
+            state = ("no Storm battle in the period — widen « Since » "
+                     "(a date, or all)")
+        self.storm_state_var.set(state)
+        self._sync_storm()
+
+    def _sync_storm(self) -> None:
+        state = "normal" if self._storm_rows else "disabled"
+        self.storm_export_btn.configure(state=state)
+        self.storm_send_btn.configure(state=state)
+
+    def _storm_export(self) -> None:
+        if not self._storm_rows:
+            return
+        folder = filedialog.askdirectory(
+            title="Destination folder", initialdir=self.prefs.get("storm_out") or None)
+        if not folder:
+            return
+        self.prefs["storm_out"] = folder
+        _save_prefs(self.db_path, self.prefs)
+        self._storm_run(folder, None, None)
+
+    def _storm_send(self) -> None:
+        url = self.url_var.get().strip()
+        if not url:
+            messagebox.showinfo(TITLE, "Enter the site URL in « Send to the site ».")
+            return
+        self._remember_send()
+        # Les fichiers sont ecrits AVANT l'envoi, comme partout : un site
+        # injoignable ne fait rien perdre.
+        folder = self.prefs.get("storm_out") or str(identity.home() / "exports")
+        self._storm_run(folder, url, self.token_var.get().strip() or None)
+
+    def _storm_run(self, folder: str, url: str | None, token: str | None) -> None:
+        try:
+            since = storm.since_ms(self.storm_since_var.get())
+        except ValueError as exc:
+            self.storm_state_var.set(f"⚠ {exc}")
+            return
+        only_mine = self.mine_var.get()
+        db = self.storm_db
+        self.storm_export_btn.configure(state="disabled")
+        self.storm_send_btn.configure(state="disabled")
+        self._status("storm: sending…" if url else "storm: writing…", "busy")
+
+        def work():
+            try:
+                res = storm.export_storm(folder, db_path=db, since_ms=since,
+                                         only_mine=only_mine, post_url=url, token=token)
+            except (gamecache.CacheUnavailable, ValueError, OSError) as exc:
+                self.q.put(Msg("log", f"[error] storm: {exc}"))
+                self.q.put(Msg("storm_done", ("storm: nothing written", "err")))
+                return
+            failed = 0
+            for w in res.written:
+                self.q.put(Msg("log", f"written: {w.path}  ({w.records} records)"))
+                if w.published is not None:
+                    pub = w.published
+                    failed += not pub.ok
+                    tag = "OK" if pub.ok else "FAILED"
+                    self.q.put(Msg("log", f"  {w.path.stem}: {tag} HTTP {pub.status}"
+                                          f"  {pub.response.strip()[:180] or pub.error}"))
+            for label, why in res.skipped:
+                self.q.put(Msg("log", f"  {label}: skipped — {why}"))
+            done = f"storm: {len(res.written)} battle(s) written"
+            if url:
+                done += f", {len(res.written) - failed} sent"
+            self.q.put(Msg("storm_done", (done, "err" if failed else "ok")))
+        self._spawn(work)
+
+
+    # -- Trains d'alliance (mails du jeu) ----------------------------------
+    # Calque de Storm : variables Tk lues sur le thread UI, et seul le resume
+    # sans pseudo (`trains.summary_of`) quitte le worker.
+
+    def _refresh_trains(self) -> None:
+        text = self.trains_since_var.get()
+        try:
+            since = trains.since_ms(text)
+        except ValueError as exc:
+            self.trains_state_var.set(f"⚠ {exc}")
+            return
+        self.prefs["trains_since"] = text.strip()
+        _save_prefs(self.db_path, self.prefs)
+        db = self.storm_db
+        self.trains_state_var.set("reading the game's mailbox…")
+
+        def work():
+            try:
+                path = db or gamecache.default_db_path()
+                if path is None:
+                    raise gamecache.CacheUnavailable(
+                        "game database not found under AppData\\LocalLow — has "
+                        "the game been run on this PC, with this Windows account?")
+                runs, n, bad = trains.load_trains(path, since_ms=since)
+            except gamecache.CacheUnavailable as exc:
+                self.q.put(Msg("train_unavailable", str(exc)))
+                return
+            self.q.put(Msg("train_list",
+                           ([trains.summary_of(r) for r in runs], n, bad)))
+        self._spawn(work)
+
+    def _trains_listed(self, payload) -> None:
+        rows, n, bad = payload
+        self._train_rows = rows
+        tree = self.trains_tree
+        tree.delete(*tree.get_children())
+        for i, r in enumerate(reversed(rows)):          # le plus recent en haut
+            label = f"{r['date']}  ·  {r['departed']} UTC"
+            if r["purchased"]:
+                label += "  ·  purchased"
+            trip = (f"{r['attacks']} attack(s), {r['robbed']} robbed"
+                    if r["arrived"] else "en route")
+            tree.insert("", "end", iid=f"train:{i}", text=label,
+                        tags=() if r["arrived"] else ("enroute",),
+                        values=(r["escort"], r["passengers"], trip))
+        state = f"{len(rows)} train(s) in the period"
+        bought = sum(1 for r in rows if r["purchased"])
+        if bought:
+            state += f"  ·  {bought} purchased"
+        if bad:
+            state += f"  ·  {bad} unreadable"
+        if not rows:
+            state = "no train in the period — widen « Since » (a date, or all)"
+        self.trains_state_var.set(state)
+        self._sync_trains()
+
+    def _sync_trains(self) -> None:
+        state = "normal" if self._train_rows else "disabled"
+        self.trains_export_btn.configure(state=state)
+        self.trains_send_btn.configure(state=state)
+
+    def _trains_export(self) -> None:
+        if not self._train_rows:
+            return
+        folder = filedialog.askdirectory(
+            title="Destination folder",
+            initialdir=self.prefs.get("trains_out") or self.prefs.get("storm_out") or None)
+        if not folder:
+            return
+        self.prefs["trains_out"] = folder
+        _save_prefs(self.db_path, self.prefs)
+        self._trains_run(folder, None, None)
+
+    def _trains_send(self) -> None:
+        url = self.url_var.get().strip()
+        if not url:
+            messagebox.showinfo(TITLE, "Enter the site URL in « Send to the site ».")
+            return
+        self._remember_send()
+        folder = self.prefs.get("trains_out") or str(identity.home() / "exports")
+        self._trains_run(folder, url, self.token_var.get().strip() or None)
+
+    def _trains_run(self, folder: str, url: str | None, token: str | None) -> None:
+        try:
+            since = trains.since_ms(self.trains_since_var.get())
+        except ValueError as exc:
+            self.trains_state_var.set(f"⚠ {exc}")
+            return
+        only_mine = self.mine_var.get()
+        db = self.storm_db
+        self.trains_export_btn.configure(state="disabled")
+        self.trains_send_btn.configure(state="disabled")
+        self._status("trains: sending…" if url else "trains: writing…", "busy")
+
+        def work():
+            try:
+                res = trains.export_trains(folder, db_path=db, since_ms=since,
+                                           only_mine=only_mine, post_url=url,
+                                           token=token)
+            except (gamecache.CacheUnavailable, ValueError, OSError) as exc:
+                self.q.put(Msg("log", f"[error] trains: {exc}"))
+                self.q.put(Msg("train_done", ("trains: nothing written", "err")))
+                return
+            failed = 0
+            for w in res.written:
+                self.q.put(Msg("log", f"written: {w.path}  ({w.records} records)"))
+                if w.published is not None:
+                    pub = w.published
+                    failed += not pub.ok
+                    tag = "OK" if pub.ok else "FAILED"
+                    self.q.put(Msg("log", f"  {w.path.stem}: {tag} HTTP {pub.status}"
+                                          f"  {pub.response.strip()[:180] or pub.error}"))
+            for label, why in res.skipped:
+                self.q.put(Msg("log", f"  {label}: skipped — {why}"))
+            done = f"trains: {len(res.written)} train(s) written"
+            if url:
+                done += f", {len(res.written) - failed} sent"
+            self.q.put(Msg("train_done", (done, "err" if failed else "ok")))
+        self._spawn(work)
 
 
 def main(db_path: str | None = None, keep: bool | None = None) -> int:

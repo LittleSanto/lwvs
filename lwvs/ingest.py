@@ -60,8 +60,6 @@ def ingest(
             continue
         counters.note_command(command)
         store.record_command(snapshot_id, command)
-        if msg is None:
-            continue
         if command == CMD_RANK and isinstance(msg, RankMessage):
             counters.rank_messages += 1
             counters.rank_rows += store.add_rank_message(snapshot_id, msg)
@@ -80,6 +78,9 @@ def ingest(
         elif command == CMD_SERVER_RANK and isinstance(msg, ServerRankMessage):
             counters.server_rank_messages += 1
             counters.server_rank_rows += store.add_server_rank_message(snapshot_id, msg)
+        # Un commit par message : une transaction ouverte toute la capture
+        # verrouille la base, et la GUI qui l'ouvre attend 5 s puis echoue.
+        store.commit()
         if progress and stats.payloads % 200 == 0:
             print(f"  ... {stats.payloads} payloads, {stats.decoded} decodes", flush=True)
         if on_progress is not None:

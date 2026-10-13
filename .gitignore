@@ -29,6 +29,9 @@ dist/
 .coverage
 htmlcov/
 
+# graphify : graphe du code, regenerable
+graphify-out/
+
 # Editeurs
 .vscode/
 .idea/

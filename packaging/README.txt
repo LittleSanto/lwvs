@@ -41,6 +41,29 @@ Usage
 The guard shown at the bottom must stay at ~100%. Below that, decoding
 misses part of what goes by: report it.
 
+Desert Storm / Canyon Storm
+---------------------------
+No capture needed, and Wireshark is not used: lwvs reads the result mails
+the game already keeps on this PC (read-only, it never writes there).
+
+  1. Play on this PC at least once after the battle, so the mail arrives.
+  2. In lwvs: "Rankings" > "Storm results" tab.
+     "Since" empty = last 7 days; a date (2026-09-14) or "all" goes further.
+  3. "Export..." (one JSON per battle) or "Send".
+
+One battle per team: Canyon A and B on Thursday, Desert A and B on Friday.
+The Canyon team is written in the mail. The Desert team is NOT: lwvs uses
+the alliance's rule, evening slot = A, early afternoon slot = B, and marks
+it "declared".
+
+Alliance trains
+---------------
+Same source, same steps, in the "Trains" tab. One JSON per train: the
+conductor, then the VIP or the Guardian, plus the attacks it took. The day
+is the game's day (server time, UTC-2), so a train leaving at 01:14 UTC
+counts for the day before. A purchased train is marked as such: the daily,
+planned train is the other one.
+
 What lwvs writes on your disk
 -----------------------------
 Nothing in this folder. Everything goes to:

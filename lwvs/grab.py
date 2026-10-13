@@ -17,7 +17,6 @@ n'a jamais eu besoin d'un fichier.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -107,14 +106,13 @@ def grab(
         grabbed = GrabResult(ingest=result)
         snapshot = result.snapshot_id
         # Resolu UNE fois : identique pour tous les flux d'une meme capture.
-        own_ids = None
         try:
             own = exporter.resolve_own_alliance(store, snapshot)
-            own_ids = own.ids
             grabbed.own_source, grabbed.own_label = own.source, own.label
         except ValueError:
             pass   # l'erreur sera rapportee par flux, avec le geste a faire
-        context = store.duel_context(snapshot, own_ids=own_ids)
+        context = exporter.context_for(store, snapshot)
+        used: set[str] = set()
 
         for feed in exporter.FEEDS:
             for day in _feed_days(store, feed, snapshot):
@@ -143,10 +141,8 @@ def grab(
                         f"{feed.key} : le message declare le jour {ctx['day']},"
                         f" tu as annonce {declared_day}. Le message fait foi.")
                 suffix = f"_j{day}" if day is not None else ""
-                path = out / f"{prefix}_{feed.key}{suffix}.json"
-                with path.open("w", encoding="utf-8", newline="") as fh:
-                    json.dump(payload, fh, ensure_ascii=False, indent=2)
-                    fh.write("\n")
+                path = exporter.write_doc(out, f"{prefix}_{feed.key}{suffix}",
+                                          used, payload)
                 sent = publish(payload, post_url, token=token) if post_url else None
                 grabbed.written.append(
                     Written(feed=feed, day=day, path=path,
