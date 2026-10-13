@@ -44,9 +44,9 @@ TITLE = f"lwvs {__version__} — Last War VS capture"
 _POLL_MS = 120
 #: Plafond de la detection, pas une duree d'attente : elle s'arrete a la preuve.
 _DETECT_SECONDS = 20
-#: La colonne de gauche empile quatre cartes : en dessous de cette hauteur, le
-#: bouton « Envoyer » passe sous le bord de la fenetre et devient introuvable.
-_MIN_SIZE = (1000, 780)
+#: En dessous, la carte « Stats site » des reglages passe sous le bord de la
+#: fenetre, et le tableau de la capture n'a plus la place de ses lignes.
+_MIN_SIZE = (960, 640)
 
 
 #: Lien de secours affiche quand tshark manque.
@@ -180,6 +180,11 @@ class App:
         self.storm_db: str | None = self.prefs.get("storm_game_db") or None
         self._storm_rows: list[dict[str, Any]] = []
         self._train_rows: list[dict[str, Any]] = []
+        #: Ecran affiche et journal deplie : survivent au changement de theme.
+        self._page = "capture"
+        self._log_open = False
+        #: Start sans interface ni port : detecter d'abord, puis demarrer seul.
+        self._start_after_detect = False
         self._vars(keep)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -219,6 +224,17 @@ class App:
         self.storm_state_var = tk.StringVar(value="reading the game's mailbox…")
         self.trains_since_var = tk.StringVar(value=self.prefs.get("trains_since", ""))
         self.trains_state_var = tk.StringVar(value="reading the game's mailbox…")
+        self.net_var = tk.StringVar()
+        for var in (self.iface_var, self.port_var):
+            var.trace_add("write", lambda *_: self._sync_net())
+        self._sync_net()
+
+    def _sync_net(self) -> None:
+        iface, port = self.iface_var.get(), self.port_var.get().strip()
+        if not port.isdigit():
+            self.net_var.set("found by itself when you press Start")
+        else:
+            self.net_var.set(f"{iface or 'no interface'}  ·  port {port}")
 
     def _restore_geometry(self) -> None:
         remembered = self.prefs.get("geometry", "")
@@ -231,7 +247,7 @@ class App:
         # Bornee a l'ecran : une taille par defaut plus haute que le moniteur
         # placerait la barre des taches par-dessus le bas de la fenetre.
         w = min(1120, self.root.winfo_screenwidth() - 40)
-        h = min(860, self.root.winfo_screenheight() - 90)
+        h = min(760, self.root.winfo_screenheight() - 90)
         x = max(0, (self.root.winfo_screenwidth() - w) // 2)
         y = max(0, (self.root.winfo_screenheight() - h) // 3)
         self.root.geometry(f"{w}x{h}+{x}+{y}")
@@ -242,30 +258,88 @@ class App:
         self.frame = tk.Frame(self.root, background=pal.bg)
         self.frame.pack(fill="both", expand=True)
 
-        self._build_header(self.frame)
-        self._build_prereq(self.frame)
+        # Un ecran par tache, choisi dans un menu lateral : capturer, lire les
+        # mails, regler. Les reglages qu'on ne touche qu'une fois ne se melent
+        # plus aux boutons qu'on presse a chaque capture.
+        self._build_nav(self.frame)
+        tk.Frame(self.frame, background=pal.border, width=1).pack(side="left", fill="y")
+        main = tk.Frame(self.frame, background=pal.bg)
+        main.pack(side="left", fill="both", expand=True)
+        self._build_prereq(main)
 
-        body = tk.Frame(self.frame, background=pal.bg)
-        body.pack(fill="both", expand=True, padx=16, pady=(0, 16))
+        body = tk.Frame(main, background=pal.bg)
+        body.pack(fill="both", expand=True, padx=24, pady=(20, 0))
         self.body_frame = body
-        body.columnconfigure(0, minsize=400)
-        body.columnconfigure(1, weight=1)
-        body.rowconfigure(0, weight=1)
-
-        left = tk.Frame(body, background=pal.bg)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
-        right = tk.Frame(body, background=pal.bg)
-        right.grid(row=0, column=1, sticky="nsew")
-
-        self._build_source(left)
-        self._build_capture(left)
-        self._build_send(left)
-        self._build_feeds(right)
-        self._build_log(right)
+        self.pages: dict[str, tk.Frame] = {}
+        for name, build in (("capture", self._build_capture_page),
+                            ("mailbox", self._build_mailbox_page),
+                            ("settings", self._build_settings_page)):
+            page = tk.Frame(body, background=pal.bg)
+            page.place(relx=0, rely=0, relwidth=1, relheight=1)
+            build(page)
+            self.pages[name] = page
+        self._show_page(self._page)
 
         self._say("the JSON exports are the deliverable; nothing is kept "
-                  "locally unless you tick \"Keep history locally\".")
+                  "locally unless you tick \"Keep history locally\" in Settings.")
         self._apply_prereq()
+
+    def _show_page(self, name: str) -> None:
+        self._page = name
+        self.pages[name].tkraise()
+        for key, btn in self.nav_btns.items():
+            btn.configure(style="NavOn.TButton" if key == name else "Nav.TButton")
+
+    def _build_nav(self, parent: tk.Frame) -> None:
+        pal, fonts = self.pal, self.fonts
+        nav = tk.Frame(parent, background=pal.bg, width=190)
+        nav.pack(side="left", fill="y")
+        nav.pack_propagate(False)
+        tk.Label(nav, text="lwvs", background=pal.bg, foreground=pal.text,
+                 font=fonts.title, anchor="w").pack(fill="x", padx=24, pady=(18, 0))
+        tk.Label(nav, text=f"Last War stats · {__version__}", background=pal.bg,
+                 foreground=pal.muted, font=fonts.small,
+                 anchor="w").pack(fill="x", padx=24, pady=(0, 18))
+        self.nav_btns: dict[str, ttk.Button] = {}
+        for key, text in (("capture", "◉   Capture"), ("mailbox", "✉   Mailbox"),
+                          ("settings", "⚙   Settings")):
+            btn = ttk.Button(nav, text=text, style="Nav.TButton",
+                             command=lambda k=key: self._show_page(k))
+            btn.pack(fill="x", padx=12, pady=2)
+            self.nav_btns[key] = btn
+
+        pill = tk.Frame(nav, background=pal.surface, highlightthickness=1,
+                        highlightbackground=pal.border, highlightcolor=pal.border)
+        pill.pack(side="bottom", fill="x", padx=12, pady=(0, 16))
+        self.state_dot = theme.Dot(pill, pal.surface)
+        self.state_dot.pack(side="left", padx=(11, 7), pady=10, anchor="n")
+        self.state_dot.colour(pal.muted)
+        tk.Label(pill, textvariable=self.status_var, background=pal.surface,
+                 foreground=pal.text, font=fonts.small, anchor="w", justify="left",
+                 wraplength=130).pack(side="left", fill="x", padx=(0, 10), pady=6)
+        # Barre indeterminee : elle ne dit pas « combien », elle dit « ca vit ».
+        # Sans elle, une detection de 25 s est indiscernable d'un gel.
+        self.busy_bar = ttk.Progressbar(nav, style="Accent.Horizontal.TProgressbar",
+                                        mode="indeterminate")
+
+    def _page_head(self, page: tk.Frame, title: str, hint: str = "") -> tk.Frame:
+        """Titre de l'ecran, une phrase d'aide, et la place des boutons a droite."""
+        pal, fonts = self.pal, self.fonts
+        head = tk.Frame(page, background=pal.bg)
+        head.pack(fill="x")
+        text = tk.Frame(head, background=pal.bg)
+        text.pack(side="left", fill="x", expand=True)
+        tk.Label(text, text=title, background=pal.bg, foreground=pal.text,
+                 font=fonts.title, anchor="w").pack(fill="x")
+        if hint:
+            tk.Label(text, text=hint, background=pal.bg, foreground=pal.muted,
+                     font=fonts.small, anchor="w", justify="left",
+                     wraplength=560).pack(fill="x", pady=(2, 0))
+        return head
+
+    def _on_bg(self, parent: tk.Misc, text: str) -> tk.Label:
+        return tk.Label(parent, text=text, background=self.pal.bg,
+                        foreground=self.pal.muted, font=self.fonts.small)
 
     def _build_prereq(self, parent: tk.Frame) -> None:
         """Ecran « Wireshark manquant ». Construit toujours, affiche si besoin.
@@ -300,156 +374,111 @@ class App:
         if not self._tshark_missing:
             self.prereq.pack_forget()
             return
-        self.prereq.pack(fill="x", padx=16, pady=(0, 12), before=self.body_frame)
+        self.prereq.pack(fill="x", padx=24, pady=(20, 0), before=self.body_frame)
         for name in ("detect_btn", "start_btn", "stop_btn"):
             btn = getattr(self, name, None)
             if btn is not None:
                 btn.configure(state="disabled")
         self._status("Wireshark missing", "err")
 
-    def _build_header(self, parent: tk.Frame) -> None:
+    # -- ecran 1 : capture ------------------------------------------------
+    def _build_capture_page(self, page: tk.Frame) -> None:
         pal, fonts = self.pal, self.fonts
-        head = tk.Frame(parent, background=pal.bg)
-        head.pack(fill="x", padx=16, pady=(14, 12))
-
-        left = tk.Frame(head, background=pal.bg)
-        left.pack(side="left")
-        tk.Label(left, text="lwvs", background=pal.bg, foreground=pal.text,
-                 font=fonts.title).pack(side="left")
-        tk.Label(left, text="Last War VS capture", background=pal.bg,
-                 foreground=pal.muted, font=fonts.small).pack(side="left",
-                                                              padx=(10, 0), pady=(6, 0))
-
-        right = tk.Frame(head, background=pal.bg)
-        right.pack(side="right")
-        toggle = ttk.Button(right, text="☀" if pal.dark else "☾", width=3,
-                            style="Icon.TButton", command=self._toggle_theme)
-        toggle.pack(side="right", padx=(10, 0))
-        theme.Tooltip(toggle, "Toggle light / dark", pal, fonts)
-
-        # Barre indeterminee : elle ne dit pas « combien », elle dit « ca vit ».
-        # Sans elle, une detection de 25 s est indiscernable d'un gel.
-        self.busy_bar = ttk.Progressbar(right, style="Accent.Horizontal.TProgressbar",
-                                        mode="indeterminate", length=90)
-
-        pill = tk.Frame(right, background=pal.surface, highlightthickness=1,
-                        highlightbackground=pal.border, highlightcolor=pal.border)
-        pill.pack(side="right")
-        self.state_dot = theme.Dot(pill, pal.surface)
-        self.state_dot.pack(side="left", padx=(11, 7), pady=8)
-        self.state_dot.colour(pal.muted)
-        tk.Label(pill, textvariable=self.status_var, background=pal.surface,
-                 foreground=pal.text, font=fonts.body).pack(side="left", padx=(0, 13))
-
-    def _build_source(self, parent: tk.Frame) -> None:
-        pal, fonts = self.pal, self.fonts
-        outer, body = theme.card(parent, pal, fonts, "Source", step="1")
-        outer.pack(fill="x", pady=(0, 12))
-        body.columnconfigure(0, weight=1)
-        body.columnconfigure(1, minsize=90)
-
-        theme.label(body, pal, fonts, "Network interface", kind="muted").grid(
-            row=0, column=0, sticky="w")
-        theme.label(body, pal, fonts, "Game port", kind="muted").grid(
-            row=0, column=1, sticky="w", padx=(10, 0))
-        self.iface_box = ttk.Combobox(body, textvariable=self.iface_var,
-                                      state="readonly", width=10)
-        self.iface_box.grid(row=1, column=0, sticky="we", pady=(3, 0))
-        self.iface_box.configure(values=self._iface_values)
-        # Le device reste consultable : c'est lui qu'on copie dans un --iface.
-        theme.Tooltip(self.iface_box,
-                      lambda: self._iface_device() or "no interface", pal, fonts)
-        port_entry = ttk.Entry(body, textvariable=self.port_var, width=8)
-        port_entry.grid(row=1, column=1, sticky="we", padx=(10, 0), pady=(3, 0))
-
-        # Un seul bouton : interface et port se prouvent par le MEME signal,
-        # une trame du jeu qui decode jusqu'a son dernier octet. Les demander
-        # separement etait deux attentes a la file pour une seule reponse.
-        self.detect_btn = ttk.Button(body, text="⌖  Detect",
-                                     style="Ghost.TButton", command=self._detect)
-        self.detect_btn.grid(row=2, column=0, columnspan=2, sticky="we",
-                             pady=(12, 0))
-        theme.Tooltip(self.detect_btn,
-                      "Listens on every interface at once and stops as soon\n"
-                      "as a game frame is recognised — a few seconds if the\n"
-                      "game is running.   ·   F4",
-                      pal, fonts)
-
-    def _build_capture(self, parent: tk.Frame) -> None:
-        pal, fonts = self.pal, self.fonts
-        outer, body = theme.card(parent, pal, fonts, "Capture", step="2")
-        outer.pack(fill="x", pady=(0, 12))
-
-        row = tk.Frame(body, background=pal.surface)
-        row.pack(fill="x")
-        self.start_btn = ttk.Button(row, text="▶  Start", style="Accent.TButton",
-                                    command=self._start)
-        self.start_btn.pack(side="left")
-        theme.Tooltip(self.start_btn, "Start capturing   ·   F5", pal, fonts)
-        self.stop_btn = ttk.Button(row, text="■  Stop", command=self._stop,
+        head = self._page_head(
+            page, "Capture", "Open each VS tab in the game and let it load: the game "
+                             "only sends a ranking when its tab loads.")
+        self.stop_btn = ttk.Button(head, text="■  Stop", command=self._stop,
                                    state="disabled")
-        self.stop_btn.pack(side="left", padx=8)
+        self.stop_btn.pack(side="right")
         theme.Tooltip(self.stop_btn, "Stop capturing   ·   F5", pal, fonts)
+        self.start_btn = ttk.Button(head, text="▶  Start", style="Accent.TButton",
+                                    command=self._start)
+        self.start_btn.pack(side="right", padx=(0, 8))
+        theme.Tooltip(self.start_btn,
+                      "Start capturing   ·   F5\n"
+                      "The first time, the interface and port are found by\n"
+                      "themselves before the capture starts.", pal, fonts)
 
+        tiles = tk.Frame(page, background=pal.bg)
+        tiles.pack(fill="x", pady=(16, 12))
+        for i in range(3):
+            tiles.columnconfigure(i, weight=1, uniform="tile")
+        guard = self._tile(tiles, 0, "Decoded fully")
         # Le garde-fou est LE chiffre qui dit si on decode ce qu'on croit : il
-        # merite une barre, pas une ligne de texte gris perdue dans le journal.
-        self.guard_bar = ttk.Progressbar(body, style="Ok.Horizontal.TProgressbar",
+        # merite une tuile, pas une ligne de texte gris perdue dans le journal.
+        self.guard_bar = ttk.Progressbar(guard, style="Ok.Horizontal.TProgressbar",
                                          mode="determinate", maximum=100, value=0)
-        self.guard_bar.pack(fill="x", pady=(14, 5))
-        theme.label(body, pal, fonts, kind="muted", textvariable=self.guard_var,
-                    wraplength=340).pack(fill="x")
+        self.guard_bar.pack(fill="x", pady=(2, 5))
+        theme.label(guard, pal, fonts, kind="muted", textvariable=self.guard_var,
+                    wraplength=220).pack(fill="x")
         theme.Tooltip(self.guard_bar,
                       "Share of payloads decoded down to their last byte.\n"
                       "Below 100 %, you are not decoding what you think.",
                       pal, fonts)
+        net = self._tile(tiles, 1, "Network")
+        theme.label(net, pal, fonts, kind="muted", textvariable=self.net_var,
+                    wraplength=220).pack(fill="x")
+        ally = self._tile(tiles, 2, "Your alliance")
+        theme.label(ally, pal, fonts, kind="muted", textvariable=self.alliance_var,
+                    wraplength=220).pack(fill="x")
 
-        tip = tk.Frame(body, background=pal.surface_alt, highlightthickness=1,
-                       highlightbackground=pal.border)
-        tip.pack(fill="x", pady=(12, 0))
-        tk.Label(tip, text="Open the VS screen while capturing, tab by tab, and "
-                           "let each one load: the game only sends a ranking "
-                           "when its tab loads.",
-                 background=pal.surface_alt, foreground=pal.muted, font=fonts.small,
-                 justify="left", anchor="w", wraplength=340).pack(
-            fill="x", padx=11, pady=8)
+        # La barre d'actions est posee AVANT le tableau : `pack` sert dans
+        # l'ordre, et un tableau extensible pose d'abord ne lui laisserait rien.
+        bar = tk.Frame(page, background=pal.bg)
+        bar.pack(side="bottom", fill="x", pady=(12, 16))
+        self._on_bg(bar, "Day").pack(side="left")
+        ttk.Entry(bar, textvariable=self.day_var, width=4).pack(side="left",
+                                                                padx=(6, 14))
+        self._on_bg(bar, "Event").pack(side="left")
+        # Liste fermee : un libelle libre fragmenterait le suivi en aval.
+        self.event_box = ttk.Combobox(bar, textvariable=self.event_var, width=22,
+                                      state="readonly")
+        self.event_box.pack(side="left", padx=6)
+        theme.Tooltip(self.event_box, "Day and event are declared by you,\n"
+                                      "not read from the game.", pal, fonts)
+        add_btn = ttk.Button(bar, text="+", width=3, style="Ghost.TButton",
+                             command=self._add_event)
+        add_btn.pack(side="left")
+        theme.Tooltip(add_btn, "Add an event to the catalogue", pal, fonts)
+        self._reload_events()
+        self.log_btn = ttk.Button(bar, style="Ghost.TButton", command=self._toggle_log)
+        self.log_btn.pack(side="left", padx=(14, 0))
 
-    def _build_feeds(self, parent: tk.Frame) -> None:
-        pal, fonts = self.pal, self.fonts
-        outer, card_body = theme.card(parent, pal, fonts, "Rankings", step="3")
-        outer.pack(fill="both", expand=True, pady=(0, 12))
+        self.send_btn = ttk.Button(bar, text="Send to the site",
+                                   style="Accent.TButton",
+                                   command=self._publish_all, state="disabled")
+        self.send_btn.pack(side="right")
+        theme.Tooltip(self.send_btn,
+                      "Publishes every ready ranking   ·   Ctrl+↵\n"
+                      "This sends the names and ids of every player in them.",
+                      pal, fonts)
+        self.exportall_btn = ttk.Button(bar, text="Save JSON…",
+                                        command=self._export_all, state="disabled")
+        self.exportall_btn.pack(side="right", padx=8)
+        theme.Tooltip(self.exportall_btn,
+                      "Writes one file per ready ranking   ·   Ctrl+Shift+E\n"
+                      "Double-click a row to save only that one   ·   Ctrl+E",
+                      pal, fonts)
 
-        # Deux onglets, pas deux cartes : la colonne de droite n'a pas la
-        # hauteur d'une troisieme carte sans ecraser le journal (mesure : 1 105 px
-        # demandes pour une fenetre minimale de 780). Et les deux sources sont
-        # vraiment distinctes -- l'une vient de la capture, l'autre du jeu.
-        self.results_tabs = ttk.Notebook(card_body, style="Card.TNotebook")
-        self.results_tabs.pack(fill="both", expand=True)
-        body = tk.Frame(self.results_tabs, background=pal.surface)
-        storm_tab = tk.Frame(self.results_tabs, background=pal.surface)
-        self.results_tabs.add(body, text="What the capture saw")
-        self.results_tabs.add(storm_tab, text="Storm results")
-        self._build_storm(storm_tab)
-        trains_tab = tk.Frame(self.results_tabs, background=pal.surface)
-        self.results_tabs.add(trains_tab, text="Trains")
-        self._build_trains(trains_tab)
-
-        holder = tk.Frame(body, background=pal.surface)
-        holder.pack(fill="both", expand=True)
-        self.tree = ttk.Treeview(holder, columns=("vu", "etat", "lignes"),
+        self.tree_holder = tk.Frame(page, background=pal.surface, highlightthickness=1,
+                                    highlightbackground=pal.border,
+                                    highlightcolor=pal.border)
+        self.tree_holder.pack(fill="both", expand=True)
+        self.tree = ttk.Treeview(self.tree_holder, columns=("vu", "etat", "lignes"),
                                  show="tree headings", height=7, selectmode="browse")
-        self.tree.heading("#0", text="Statistic", anchor="w")
+        self.tree.heading("#0", text="Ranking", anchor="w")
         self.tree.heading("vu", text="Messages", anchor="center")
         self.tree.heading("etat", text="Status", anchor="w")
         self.tree.heading("lignes", text="Rows", anchor="e")
-        self.tree.column("#0", width=300, minwidth=180)
-        self.tree.column("vu", width=90, anchor="center", stretch=False)
-        self.tree.column("etat", width=150, anchor="w", stretch=False)
-        self.tree.column("lignes", width=70, anchor="e", stretch=False)
+        self.tree.column("#0", width=280, minwidth=180)
+        self.tree.column("vu", width=80, anchor="center", stretch=False)
+        self.tree.column("etat", width=260, anchor="w", stretch=False)
+        self.tree.column("lignes", width=60, anchor="e", stretch=False)
         # Une ligne prete garde la couleur du texte : peindre en vert les 4/5
         # des lignes ne signale plus rien. Seul l'anormal prend une couleur.
         for tag, colour in (("warn", pal.warn), ("muted", pal.muted)):
             self.tree.tag_configure(tag, foreground=colour)
-        scroll = ttk.Scrollbar(holder, style="Slim.Vertical.TScrollbar",
+        scroll = ttk.Scrollbar(self.tree_holder, style="Slim.Vertical.TScrollbar",
                                command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll.set)
         self.tree.pack(side="left", fill="both", expand=True)
@@ -457,69 +486,85 @@ class App:
         self.tree.bind("<<TreeviewSelect>>", lambda _e: self._sync_buttons())
         self.tree.bind("<Double-1>", lambda _e: self._export())
 
-        theme.label(body, pal, fonts, kind="muted", textvariable=self.alliance_var,
-                    wraplength=520).pack(fill="x", pady=(10, 0))
+        self._build_log(page)
 
-        opts = tk.Frame(body, background=pal.surface)
-        opts.pack(fill="x", pady=(8, 0))
-        theme.Check(opts, pal, fonts, "My alliance only", self.mine_var,
-                    command=self._refresh_feeds).pack(side="left")
-        keep_box = theme.Check(opts, pal, fonts, "Keep history locally",
-                               self._keep, command=self._refresh_feeds)
-        keep_box.pack(side="left", padx=24)
-        theme.Tooltip(keep_box, "Unticked, the session database is deleted on\n"
-                                "close: only the JSON exports remain.",
-                      pal, fonts)
+    def _tile(self, parent: tk.Frame, column: int, title: str) -> tk.Frame:
+        outer, body = theme.card(parent, self.pal, self.fonts, title)
+        outer.grid(row=0, column=column, sticky="nsew",
+                   padx=(0 if column == 0 else 6, 0 if column == 2 else 6))
+        return body
 
-        decl = tk.Frame(body, background=pal.surface)
-        decl.pack(fill="x", pady=(12, 0))
-        theme.label(decl, pal, fonts, "Day", kind="muted").pack(side="left")
-        ttk.Entry(decl, textvariable=self.day_var, width=4).pack(side="left",
-                                                                 padx=(6, 16))
-        theme.label(decl, pal, fonts, "Event", kind="muted").pack(side="left")
-        # Liste fermee : un libelle libre fragmenterait le suivi en aval.
-        self.event_box = ttk.Combobox(decl, textvariable=self.event_var, width=26,
-                                      state="readonly")
-        self.event_box.pack(side="left", padx=6)
-        add_btn = ttk.Button(decl, text="+", width=3, style="Ghost.TButton",
-                             command=self._add_event)
-        add_btn.pack(side="left")
-        theme.Tooltip(add_btn, "Add an event to the catalogue", pal, fonts)
-        self._reload_events()
-        # Sous la ligne, pas a sa suite : a droite d'une combo large, la mise en
-        # garde sortait du cadre et se faisait tronquer.
-        theme.label(body, pal, fonts,
-                    "these two fields are declared by you, not read from the game",
-                    kind="muted").pack(fill="x", pady=(6, 0))
+    def _build_log(self, page: tk.Frame) -> None:
+        """Journal replie sous le tableau : utile quand ca casse, pas a chaque clic.
 
-        actions = tk.Frame(body, background=pal.surface)
-        actions.pack(fill="x", pady=(14, 0))
-        self.export_btn = ttk.Button(actions, text="Export as JSON…",
-                                     style="Accent.TButton",
-                                     command=self._export, state="disabled")
-        self.export_btn.pack(side="right")
-        theme.Tooltip(self.export_btn,
-                      "Exports the selected row   ·   Ctrl+E\n"
-                      "(double-clicking the row works too)", pal, fonts)
-        self.exportall_btn = ttk.Button(actions, text="Export all…",
-                                        command=self._export_all, state="disabled")
-        self.exportall_btn.pack(side="right", padx=8)
-        theme.Tooltip(self.exportall_btn,
-                      "Writes one file per ready ranking   ·   Ctrl+Shift+E",
-                      pal, fonts)
+        Toujours construit (tout le code y ecrit), seulement affiche a la demande.
+        """
+        pal, fonts = self.pal, self.fonts
+        self.log_panel = tk.Frame(page, background=pal.bg)
+        holder = tk.Frame(self.log_panel, background=pal.bg)
+        holder.pack(fill="both", expand=True, pady=(12, 0))
+        self.log = tk.Text(holder, height=8, wrap="word", state="disabled",
+                           background=pal.field, foreground=pal.text,
+                           insertbackground=pal.text, selectbackground=pal.accent_soft,
+                           font=fonts.mono, relief="flat", borderwidth=0,
+                           highlightthickness=1, highlightbackground=pal.border,
+                           highlightcolor=pal.border, padx=10, pady=8, spacing1=1)
+        self.log.tag_configure("time", foreground=pal.muted)
+        self.log.tag_configure("detail", foreground=pal.muted)
+        self.log.tag_configure("err", foreground=pal.err)
+        self.log.tag_configure("ok", foreground=pal.ok)
+        scroll = ttk.Scrollbar(holder, style="Slim.Vertical.TScrollbar",
+                               command=self.log.yview)
+        self.log.configure(yscrollcommand=scroll.set)
+        self.log.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+
+        bar = tk.Frame(self.log_panel, background=pal.bg)
+        bar.pack(fill="x", pady=(6, 0))
+        ttk.Button(bar, text="Copy", style="Ghost.TButton",
+                   command=self._copy_log).pack(side="right")
+        ttk.Button(bar, text="Clear", style="Ghost.TButton",
+                   command=self._clear_log).pack(side="right", padx=8)
+        self._toggle_log(self._log_open)
+
+    def _toggle_log(self, show: bool | None = None) -> None:
+        self._log_open = (not self._log_open) if show is None else show
+        if self._log_open:
+            self.log_panel.pack(side="bottom", fill="x", before=self.tree_holder)
+        else:
+            self.log_panel.pack_forget()
+        self.log_btn.configure(text="Hide log" if self._log_open else "Show log")
+
+    # -- ecran 2 : mails du jeu -------------------------------------------
+    def _build_mailbox_page(self, page: tk.Frame) -> None:
+        pal, fonts = self.pal, self.fonts
+        self._page_head(page, "Mailbox",
+                        "Read from the game's own mailbox on this PC — no capture "
+                        "needed. Just open the game once after the battle.")
+        outer, card_body = theme.card(page, pal, fonts)
+        outer.pack(fill="both", expand=True, pady=(16, 16))
+        # Storm et trains ont la meme source et les memes gestes : deux onglets
+        # d'un meme ecran, pas deux ecrans.
+        self.results_tabs = ttk.Notebook(card_body, style="Card.TNotebook")
+        self.results_tabs.pack(fill="both", expand=True)
+        storm_tab = tk.Frame(self.results_tabs, background=pal.surface)
+        trains_tab = tk.Frame(self.results_tabs, background=pal.surface)
+        self.results_tabs.add(storm_tab, text="Storm")
+        self.results_tabs.add(trains_tab, text="Trains")
+        self._build_storm(storm_tab)
+        self._build_trains(trains_tab)
 
     def _build_storm(self, body: tk.Frame) -> None:
         """Desert / Canyon Storm : hors capture, lu dans la base du jeu.
 
-        Onglet a part, et non des lignes du tableau de la capture : ce tableau
+        Ecran a part, et non des lignes du tableau de la capture : ce tableau
         dit ce qu'une CAPTURE a vu, et les mails ne passent jamais sur le fil
         quand on les ouvre. Rien ici ne depend de tshark.
         """
         pal, fonts = self.pal, self.fonts
         theme.label(body, pal, fonts, kind="muted",
-                    text="Read from the game's own mailbox on this PC — no capture "
-                         "needed. One battle per team: Canyon on Thursday, Desert "
-                         "on Friday.", wraplength=520).pack(fill="x", pady=(0, 10))
+                    text="One battle per team: Canyon on Thursday, Desert on "
+                         "Friday.", wraplength=520).pack(fill="x", pady=(0, 10))
 
         bar = tk.Frame(body, background=pal.surface)
         bar.pack(fill="x")
@@ -531,14 +576,14 @@ class App:
                              "all = the whole mailbox", pal, fonts)
         ttk.Button(bar, text="↻", width=3, style="Ghost.TButton",
                    command=self._refresh_storm).pack(side="left")
-        self.storm_send_btn = ttk.Button(bar, text="Send", state="disabled",
+        self.storm_send_btn = ttk.Button(bar, text="Send to the site", state="disabled",
+                                         style="Accent.TButton",
                                          command=self._storm_send)
         self.storm_send_btn.pack(side="right")
         theme.Tooltip(self.storm_send_btn,
                       "Writes one JSON per battle, then sends them to the site\n"
-                      "(URL and token of « Send to the site »)", pal, fonts)
-        self.storm_export_btn = ttk.Button(bar, text="Export…", state="disabled",
-                                           style="Accent.TButton",
+                      "(URL and token from Settings)", pal, fonts)
+        self.storm_export_btn = ttk.Button(bar, text="Save JSON…", state="disabled",
                                            command=self._storm_export)
         self.storm_export_btn.pack(side="right", padx=8)
         theme.Tooltip(self.storm_export_btn, "One JSON file per battle", pal, fonts)
@@ -574,8 +619,7 @@ class App:
         """
         pal, fonts = self.pal, self.fonts
         theme.label(body, pal, fonts, kind="muted",
-                    text="Read from the game's own mailbox on this PC — no capture "
-                         "needed. One line per train: conductor, VIP or Guardian, "
+                    text="One line per train: conductor, VIP or Guardian, "
                          "attacks.", wraplength=520).pack(fill="x", pady=(0, 10))
 
         bar = tk.Frame(body, background=pal.surface)
@@ -588,14 +632,14 @@ class App:
                              "all = the whole mailbox", pal, fonts)
         ttk.Button(bar, text="↻", width=3, style="Ghost.TButton",
                    command=self._refresh_trains).pack(side="left")
-        self.trains_send_btn = ttk.Button(bar, text="Send", state="disabled",
+        self.trains_send_btn = ttk.Button(bar, text="Send to the site",
+                                          state="disabled", style="Accent.TButton",
                                           command=self._trains_send)
         self.trains_send_btn.pack(side="right")
         theme.Tooltip(self.trains_send_btn,
                       "Writes one JSON per train, then sends them to the site\n"
-                      "(URL and token of « Send to the site »)", pal, fonts)
-        self.trains_export_btn = ttk.Button(bar, text="Export…", state="disabled",
-                                            style="Accent.TButton",
+                      "(URL and token from Settings)", pal, fonts)
+        self.trains_export_btn = ttk.Button(bar, text="Save JSON…", state="disabled",
                                             command=self._trains_export)
         self.trains_export_btn.pack(side="right", padx=8)
         theme.Tooltip(self.trains_export_btn, "One JSON file per train", pal, fonts)
@@ -622,10 +666,24 @@ class App:
         theme.label(body, pal, fonts, kind="muted", textvariable=self.trains_state_var,
                     wraplength=520).pack(fill="x", pady=(8, 0))
 
+    # -- ecran 3 : reglages -----------------------------------------------
+    def _build_settings_page(self, page: tk.Frame) -> None:
+        self._page_head(page, "Settings")
+        cols = tk.Frame(page, background=self.pal.bg)
+        cols.pack(fill="both", expand=True, pady=(16, 16))
+        cols.columnconfigure((0, 1), weight=1, uniform="col")
+        left = tk.Frame(cols, background=self.pal.bg)
+        left.grid(row=0, column=0, sticky="new", padx=(0, 8))
+        right = tk.Frame(cols, background=self.pal.bg)
+        right.grid(row=0, column=1, sticky="new", padx=(8, 0))
+        self._build_send(left)
+        self._build_source(right)
+        self._build_data(right)
+
     def _build_send(self, parent: tk.Frame) -> None:
         pal, fonts = self.pal, self.fonts
-        outer, body = theme.card(parent, pal, fonts, "Send to the site", step="4")
-        outer.pack(fill="both", expand=True)
+        outer, body = theme.card(parent, pal, fonts, "Stats site")
+        outer.pack(fill="x")
         body.columnconfigure(0, weight=1)
 
         theme.label(body, pal, fonts, "URL", kind="muted").grid(
@@ -638,7 +696,7 @@ class App:
         ttk.Entry(body, textvariable=self.token_var, width=10, show="•").grid(
             row=3, column=0, sticky="we", pady=(3, 0))
 
-        theme.Check(body, pal, fonts, "Send after every capture",
+        theme.Check(body, pal, fonts, "Send automatically when a capture stops",
                     self.autosend_var).grid(row=4, column=0, sticky="w",
                                             pady=(10, 0))
         # Un jeton en clair dans un fichier est un vrai risque : on ne le retient
@@ -646,15 +704,8 @@ class App:
         theme.Check(body, pal, fonts, "Remember the token (plain text on this PC)",
                     self.keep_token_var).grid(row=5, column=0, sticky="w", pady=(4, 0))
 
-        self.send_btn = ttk.Button(body, text="Send now",
-                                   style="Accent.TButton",
-                                   command=self._publish_all, state="disabled")
-        self.send_btn.grid(row=6, column=0, sticky="we", pady=(12, 0))
-        theme.Tooltip(self.send_btn, "Publishes every ready ranking   ·   Ctrl+↵",
-                      pal, fonts)
-
         warn = tk.Frame(body, background=pal.surface)
-        warn.grid(row=7, column=0, sticky="we", pady=(10, 0))
+        warn.grid(row=6, column=0, sticky="we", pady=(12, 0))
         dot = theme.Dot(warn, pal.surface)
         dot.pack(side="left", padx=(0, 7), pady=(4, 0), anchor="n")
         dot.colour(pal.warn)
@@ -662,36 +713,59 @@ class App:
                     text="Sending publishes the names and ids of every player "
                          "in the ranking.").pack(side="left", fill="x")
 
-    def _build_log(self, parent: tk.Frame) -> None:
+    def _build_source(self, parent: tk.Frame) -> None:
         pal, fonts = self.pal, self.fonts
-        outer, body = theme.card(parent, pal, fonts, "Log",
-                                 hint="this session's history")
-        outer.pack(fill="both", expand=True)
+        outer, body = theme.card(parent, pal, fonts, "Network")
+        outer.pack(fill="x", pady=(0, 16))
+        body.columnconfigure(0, weight=1)
+        body.columnconfigure(1, minsize=90)
 
-        holder = tk.Frame(body, background=pal.surface)
-        holder.pack(fill="both", expand=True)
-        self.log = tk.Text(holder, height=8, wrap="word", state="disabled",
-                           background=pal.field, foreground=pal.text,
-                           insertbackground=pal.text, selectbackground=pal.accent_soft,
-                           font=fonts.mono, relief="flat", borderwidth=0,
-                           highlightthickness=1, highlightbackground=pal.border,
-                           highlightcolor=pal.border, padx=10, pady=8, spacing1=1)
-        self.log.tag_configure("time", foreground=pal.muted)
-        self.log.tag_configure("detail", foreground=pal.muted)
-        self.log.tag_configure("err", foreground=pal.err)
-        self.log.tag_configure("ok", foreground=pal.ok)
-        scroll = ttk.Scrollbar(holder, style="Slim.Vertical.TScrollbar",
-                               command=self.log.yview)
-        self.log.configure(yscrollcommand=scroll.set)
-        self.log.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
+        theme.label(body, pal, fonts, kind="muted", wraplength=360,
+                    text="Found by itself when you press Start. Change it only "
+                         "if detection fails.").grid(row=0, column=0, columnspan=2,
+                                                     sticky="w", pady=(0, 10))
+        theme.label(body, pal, fonts, "Network interface", kind="muted").grid(
+            row=1, column=0, sticky="w")
+        theme.label(body, pal, fonts, "Game port", kind="muted").grid(
+            row=1, column=1, sticky="w", padx=(10, 0))
+        self.iface_box = ttk.Combobox(body, textvariable=self.iface_var,
+                                      state="readonly", width=10)
+        self.iface_box.grid(row=2, column=0, sticky="we", pady=(3, 0))
+        self.iface_box.configure(values=self._iface_values)
+        # Le device reste consultable : c'est lui qu'on copie dans un --iface.
+        theme.Tooltip(self.iface_box,
+                      lambda: self._iface_device() or "no interface", pal, fonts)
+        port_entry = ttk.Entry(body, textvariable=self.port_var, width=8)
+        port_entry.grid(row=2, column=1, sticky="we", padx=(10, 0), pady=(3, 0))
 
-        bar = tk.Frame(body, background=pal.surface)
-        bar.pack(fill="x", pady=(8, 0))
-        ttk.Button(bar, text="Copy", style="Ghost.TButton",
-                   command=self._copy_log).pack(side="right")
-        ttk.Button(bar, text="Clear", style="Ghost.TButton",
-                   command=self._clear_log).pack(side="right", padx=8)
+        # Un seul bouton : interface et port se prouvent par le MEME signal,
+        # une trame du jeu qui decode jusqu'a son dernier octet. Les demander
+        # separement etait deux attentes a la file pour une seule reponse.
+        self.detect_btn = ttk.Button(body, text="⌖  Detect again",
+                                     style="Ghost.TButton", command=self._detect)
+        self.detect_btn.grid(row=3, column=0, columnspan=2, sticky="w",
+                             pady=(12, 0))
+        theme.Tooltip(self.detect_btn,
+                      "Listens on every interface at once and stops as soon\n"
+                      "as a game frame is recognised — a few seconds if the\n"
+                      "game is running.   ·   F4",
+                      pal, fonts)
+
+    def _build_data(self, parent: tk.Frame) -> None:
+        pal, fonts = self.pal, self.fonts
+        outer, body = theme.card(parent, pal, fonts, "Data and display")
+        outer.pack(fill="x")
+        theme.Check(body, pal, fonts, "My alliance only", self.mine_var,
+                    command=self._refresh_feeds).pack(anchor="w")
+        keep_box = theme.Check(body, pal, fonts, "Keep history locally",
+                               self._keep, command=self._refresh_feeds)
+        keep_box.pack(anchor="w", pady=(4, 0))
+        theme.Tooltip(keep_box, "Unticked, the session database is deleted on\n"
+                                "close: only the JSON exports remain.",
+                      pal, fonts)
+        ttk.Button(body, text="☀  Light theme" if pal.dark else "☾  Dark theme",
+                   style="Ghost.TButton",
+                   command=self._toggle_theme).pack(anchor="w", pady=(12, 0))
 
     def _bind_keys(self) -> None:
         # Les raccourcis sont annonces dans les bulles d'aide : un raccourci
@@ -749,7 +823,7 @@ class App:
         """Compteur, pas booleen : deux taches de fond se chevauchent souvent."""
         was, self._busy = self._busy, max(0, self._busy + delta)
         if not was and self._busy:
-            self.busy_bar.pack(side="right", padx=(0, 12))
+            self.busy_bar.pack(side="bottom", fill="x", padx=12, pady=(0, 8))
             self.busy_bar.start(14)
         elif was and not self._busy:
             self.busy_bar.stop()
@@ -793,6 +867,7 @@ class App:
                   "as soon as a game frame is recognised. Keep the game open.")
         self._status("detecting…", "busy")
         self.detect_btn.configure(state="disabled")
+        self.start_btn.configure(state="disabled")
 
         def work():
             try:
@@ -807,6 +882,7 @@ class App:
         self._spawn(work)
 
     def _detected(self, found: "capture.Detection") -> None:
+        then_start, self._start_after_detect = self._start_after_detect, False
         for att in found.attempts[:4]:
             best = att.best
             note = (f"port {best.port} · {best.exact} exact frames"
@@ -825,6 +901,8 @@ class App:
         self._say(f"-> {found.iface.name or found.iface.device}, port "
                   f"{found.port} — found in {found.seconds:.0f} s.", "ok")
         self._status("interface and port found", "ok")
+        if then_start:
+            self._start()
 
     def _iface_device(self) -> str:
         """Le device tshark derriere le libelle affiche -- la vraie valeur."""
@@ -853,7 +931,10 @@ class App:
     def _start(self) -> None:
         iface, port = self._iface_device(), self.port_var.get().strip()
         if not iface or not port.isdigit():
-            messagebox.showinfo(TITLE, "An interface and a numeric port are required.")
+            # Rien a demander au joueur : la detection trouve les deux, et la
+            # capture demarre d'elle-meme a la preuve.
+            self._start_after_detect = True
+            self._detect()
             return
         self.prefs.update({"iface": iface, "port": port, "mine": self.mine_var.get(),
                            "keep": self._keep.get()})
@@ -936,7 +1017,10 @@ class App:
         elif msg.kind == "detected":
             self._detected(msg.payload)
         elif msg.kind == "detect_end":
+            self._start_after_detect = False
             self.detect_btn.configure(state="normal")
+            if str(self.stop_btn.cget("state")) != "normal":
+                self.start_btn.configure(state="normal")
         elif msg.kind == "progress":
             if msg.payload is None:
                 self._status("ready")
@@ -1041,14 +1125,16 @@ class App:
                 try:
                     own = exporter.resolve_own_alliance(store, snapshot)
                     self.alliance_var.set(
-                        f"alliance: {own.label}  ·  source: "
+                        f"{own.label}  ·  from the "
                         f"{_SOURCE_LABELS.get(own.source, own.source)}")
                 except ValueError:
                     self.alliance_var.set(
-                        "⚠ alliance not identified — open the Duel screen or the "
+                        "⚠ not identified — open the Duel screen or the "
                         "member list once, it will be remembered")
+            elif not self.mine_var.get():
+                self.alliance_var.set("every alliance (see Settings)")
             else:
-                self.alliance_var.set("")
+                self.alliance_var.set("known after the first capture")
             for feed in exporter.FEEDS:
                 alliance = (exporter.MINE
                             if self.mine_var.get() and not feed.inherently_mine
@@ -1137,13 +1223,11 @@ class App:
         return snaps[-1].id if snaps else None
 
     def _sync_buttons(self) -> None:
-        ready = [k for k, v in getattr(self, "_rows", {}).items() if v["count"]]
-        sel = self.tree.selection()
-        self.export_btn.configure(
-            state="normal" if sel and self._rows.get(sel[0], {}).get("count") else "disabled")
-        self.exportall_btn.configure(state="normal" if ready else "disabled")
-        if hasattr(self, "send_btn"):
-            self.send_btn.configure(state="normal" if ready else "disabled")
+        n = sum(1 for v in getattr(self, "_rows", {}).values() if v["count"])
+        self.exportall_btn.configure(state="normal" if n else "disabled")
+        self.send_btn.configure(
+            state="normal" if n else "disabled",
+            text=f"Send {n} ranking{'s' * (n > 1)} to the site" if n else "Send to the site")
 
     # -- export -----------------------------------------------------------
     def _export(self) -> None:
@@ -1209,7 +1293,8 @@ class App:
     def _publish_all(self) -> None:
         url = self.url_var.get().strip()
         if not url:
-            messagebox.showinfo(TITLE, "Enter the site URL.")
+            self._show_page("settings")
+            messagebox.showinfo(TITLE, "Enter the site URL in Settings.")
             return
         token = self.token_var.get().strip() or None
         # On lit l'etat de l'UI ICI, sur le thread UI, et on ne passe au worker
@@ -1374,7 +1459,8 @@ class App:
     def _storm_send(self) -> None:
         url = self.url_var.get().strip()
         if not url:
-            messagebox.showinfo(TITLE, "Enter the site URL in « Send to the site ».")
+            self._show_page("settings")
+            messagebox.showinfo(TITLE, "Enter the site URL in Settings.")
             return
         self._remember_send()
         # Les fichiers sont ecrits AVANT l'envoi, comme partout : un site
@@ -1496,7 +1582,8 @@ class App:
     def _trains_send(self) -> None:
         url = self.url_var.get().strip()
         if not url:
-            messagebox.showinfo(TITLE, "Enter the site URL in « Send to the site ».")
+            self._show_page("settings")
+            messagebox.showinfo(TITLE, "Enter the site URL in Settings.")
             return
         self._remember_send()
         folder = self.prefs.get("trains_out") or str(identity.home() / "exports")

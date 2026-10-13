@@ -163,6 +163,16 @@ def apply(root: tk.Tk, mode: str = "sombre") -> tuple[Palette, Fonts]:
         darkcolor=[("pressed", pal.surface_alt), ("active", pal.surface_alt)],
     )
     style.configure("Icon.TButton", padding=(8, 4), font=fonts.body)
+    # Menu lateral : a plat sur le fond de la fenetre, l'ecran courant surligne.
+    for name, bg, fg, font in (("Nav.TButton", pal.bg, pal.muted, fonts.body),
+                               ("NavOn.TButton", pal.accent_soft, pal.text, fonts.bold)):
+        style.configure(name, background=bg, foreground=fg, bordercolor=bg,
+                        lightcolor=bg, darkcolor=bg, anchor="w", padding=(14, 10),
+                        font=font, **flat)
+        style.map(name, background=[("active", pal.surface_alt if bg == pal.bg else bg)],
+                  foreground=[("active", pal.text)],
+                  lightcolor=[("active", pal.surface_alt if bg == pal.bg else bg)],
+                  darkcolor=[("active", pal.surface_alt if bg == pal.bg else bg)])
 
     # -- champs -------------------------------------------------------------
     for name in ("TEntry", "TCombobox"):
