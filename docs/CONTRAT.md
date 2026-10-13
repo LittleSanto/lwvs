@@ -56,6 +56,7 @@ le fil, elles sont exactes ou absentes. Le site ne doit pas les attendre.
 | `desert_storm_rank` | points personnels d'**une** bataille de Desert Storm | non — une bataille |
 | `canyon_storm_rank` | points totaux d'**une** bataille de Canyon Storm (bataille + assistance + stratégie) | non — une bataille |
 | `alliance_train` | **pas de `score`** : qui conduisait **un** train, et son VIP ou Guardian | non — un train |
+| `canyon_signup_a`, `canyon_signup_b` | **pas de `score`** : qui est **inscrit** au Canyon Storm dans l'équipe A / B, titulaire ou remplaçant | non — un état à l'instant de la capture |
 
 D'autres modes apparaîtront. **Le site doit accepter un `mode` inconnu** en le
 stockant tel quel plutôt qu'en rejetant le document : de nouvelles statistiques
@@ -373,6 +374,48 @@ planning : joindre `(train_date, purchased = false)` au conducteur prévu ce
 jour-là, sur `uid` — jamais sur le pseudo. Un jour sans document n'est pas
 forcément un jour sans train : la boîte du client expire, et ne contient que ce
 qu'elle a reçu.
+
+### `canyon_signup_a` / `canyon_signup_b` — les inscrits d'une équipe
+
+Source : le **fil**, pas un mail. Le message `quarantine.act.player.list` arrive
+quand le joueur ouvre l'écran d'inscription du Canyon Storm ; il liste les
+membres de **ton** alliance, chacun avec son équipe. Un document par équipe.
+
+```json
+{
+  "exported_at": "2026-10-13T11:10:14+00:00",
+  "mode": "canyon_signup_a",
+  "context": { "team": "A", "team_source": "message" },
+  "records": [
+    { "rank": 1, "uid": "…", "player_name": "…", "role": "starter" },
+    { "rank": 2, "uid": "…", "player_name": "…", "role": "substitute" }
+  ]
+}
+```
+
+| champ | sens |
+|---|---|
+| `records` | les joueurs inscrits dans cette équipe. **Pas de `score`** : ce document dit *qui*, pas *combien*. Le message porte des puissances, mais aucune n'est exportée — on n'exporte pas une métrique qu'on ne sait pas nommer (cf. le faux ami du THP). |
+| `records[].rank` | position `1..N` **dans le document**, triée par pseudo. Le jeu ne classe personne ici. |
+| `records[].role` | `"starter"` ou `"substitute"`. **Absent** si le jeu envoie une valeur inconnue : le joueur reste, son rôle n'est pas deviné. |
+| `context.team` | `"A"` ou `"B"`. Lu sur le message (`group` 1 / 2). La correspondance 1 = A, 2 = B vient d'un effectif **différent** par équipe : 22 et 24 à l'écran, 22 et 24 dans le message. |
+
+**Établi le 13/10/2026** sur une capture de l'écran d'inscription : 98 membres,
+22 en A, 24 en B, 52 non inscrits (absents du document).
+
+**Titulaire / remplaçant : très probable, pas confirmé à l'écran.** Chaque
+équipe a exactement 20 joueurs au même `state` (le plafond de titulaires), plus
+un reste de 2 (A) et 4 (B) à l'autre valeur, sous le plafond de 10 remplaçants.
+
+**Ce que le site doit savoir :**
+
+- **C'est un instantané des inscriptions** à l'ouverture de l'écran, pas la
+  composition finale : on peut s'inscrire ou se désinscrire ensuite.
+- **Seuls les membres de ton alliance** y figurent. Un allié placé dans la même
+  équipe n'apparaît pas dans ce message.
+- Deux ouvertures de l'écran à des moments différents donnent deux documents
+  (autre `exported_at`, donc autre `Idempotency-Key`, §5) : garder le plus récent
+  par `(mode)`.
 
 ---
 

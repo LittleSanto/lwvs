@@ -41,7 +41,7 @@ __all__ = ["DATASETS", "COLUMNS", "Feed", "FEEDS", "FEEDS_BY_KEY", "OwnAlliance"
            "write_csv", "write_json", "write_doc", "build_records", "run_export",
            "STORM_MODES", "build_storm_records", "TRAIN_MODE", "build_train_records"]
 
-DATASETS = ("players", "group", "standing", "members", "camp", "server")
+DATASETS = ("players", "group", "standing", "members", "camp", "server", "canyon")
 
 #: Valeur speciale de --alliance : resout TON alliance par la regle du
 #: protocole (position du groupe == position de duelInfo) plutot que de figer
@@ -70,6 +70,8 @@ COLUMNS: dict[str, tuple[str, ...]] = {
         "hero_power", "level", "country", "alliance_id", "alliance_abbr",
         "alliance_name", "src_server", "server_id",
     ),
+    "canyon": ("captured_at", "snapshot_id", "team", "uid", "name", "server_id",
+               "role"),
     "members": (
         "captured_at", "snapshot_id", "alliance_id", "uid", "name", "army_kill",
         "power", "alliance_rank", "today_progress", "weekly_progress",
@@ -201,6 +203,9 @@ def collect(
         # `rank.get` porte `allianceId` : le filtre par alliance est un vrai
         # identifiant, pas un rabattement sur l'abreviation comme pour `camp`.
         rows = store.fetch_server_rank(alliance_ids=own_ids, snapshot=snapshot)
+    elif dataset == "canyon":
+        # Le message est la liste de TON alliance : `scope` est l'equipe, A ou B.
+        rows = store.fetch_canyon_signup(team=scope, snapshot=snapshot)
     elif dataset == "group":
         rows = store.fetch_group(alliance=alliance, snapshot=snapshot,
                                  alliance_ids=own_ids)
@@ -448,6 +453,27 @@ FEEDS: tuple[Feed, ...] = (
              "de journee n'est transmis.",
     ),
     Feed(
+        key="canyon_a",
+        label="Canyon Storm — registered, team A",
+        dataset="canyon",
+        command="quarantine.act.player.list",
+        scope="A",
+        mode="canyon_signup_a",
+        inherently_mine=True,
+        hint="Inscrits de ton alliance a l'ecran d'inscription du Canyon Storm. "
+             "Ouvre l'ecran pour le recevoir. Qui, pas combien : aucun score.",
+    ),
+    Feed(
+        key="canyon_b",
+        label="Canyon Storm — registered, team B",
+        dataset="canyon",
+        command="quarantine.act.player.list",
+        scope="B",
+        mode="canyon_signup_b",
+        inherently_mine=True,
+        hint="Idem, equipe B.",
+    ),
+    Feed(
         key="vs_total",
         label="VS points — duel total",
         dataset="players",
@@ -481,6 +507,8 @@ def build_records(
     event: str | None = None,
     metric: str | None = None,
 ) -> dict[str, Any]:
+    if dataset == "canyon":
+        return _build_canyon_records(rows, mode, scope)
     try:
         score_key, default_mode = _RECORD_METRICS[dataset]
     except KeyError:
@@ -586,6 +614,50 @@ def build_records(
             for i, r in enumerate(ranked)
     ]
     return doc
+
+
+# ---------------------------------------------------------------------------
+# Inscrits du Canyon Storm -- un document par equipe
+# ---------------------------------------------------------------------------
+#
+# Le document dit QUI est inscrit et s'il est titulaire ou remplacant (`role`),
+# pas combien : aucun `score`. Le message
+# porte des puissances, mais on n'exporte pas une metrique qu'on ne sait pas
+# nommer (cf. le faux ami du THP). `rank` est la position 1..N dans le
+# document, triee par pseudo : le message ne classe personne. L'equipe est dans
+# `context.team`, comme pour les rapports de Storm.
+
+CANYON_SIGNUP_MODE = "canyon_signup"
+
+
+def _build_canyon_records(rows: Sequence[dict[str, Any]], mode: str | None,
+                          team: str | None) -> dict[str, Any]:
+    snapshots = {r.get("snapshot_id") for r in rows}
+    if len(snapshots) > 1:
+        raise ValueError(
+            "le format 'records' ne peut pas melanger plusieurs captures"
+            f" (snapshots {sorted(snapshots)}). Choisis-en une avec --snapshot N.")
+    teams = {r.get("team") for r in rows}
+    if len(teams) > 1:
+        raise ValueError(
+            "un document porte UNE equipe : donne --scope A ou --scope B"
+            " (les deux se melangeraient dans une meme liste).")
+    ranked = sorted(rows, key=lambda r: ((r.get("name") or "").casefold(),
+                                         r.get("uid") or ""))
+    captured = next((r["captured_at"] for r in ranked if r.get("captured_at")), None)
+    ctx: dict[str, Any] = {"team": team or next(iter(teams), None),
+                           "team_source": "message"}
+    ctx = {k: v for k, v in ctx.items() if v is not None}
+    return {
+        "exported_at": captured or datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "mode": mode or (f"{CANYON_SIGNUP_MODE}_{ctx['team'].lower()}"
+                         if "team" in ctx else CANYON_SIGNUP_MODE),
+        "context": ctx,
+        # Role inconnu = cle absente, jamais devinee (meme regle que les trains).
+        "records": [{"rank": i + 1, "uid": r.get("uid"), "player_name": r.get("name"),
+                     **({"role": r["role"]} if r.get("role") else {})}
+                    for i, r in enumerate(ranked)],
+    }
 
 
 # ---------------------------------------------------------------------------

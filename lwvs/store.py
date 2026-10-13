@@ -21,7 +21,8 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .messages import (CampRankMessage, GroupMessage, MembersMessage,
-                       RankMessage, SeasonMessage, ServerRankMessage)
+                       RankMessage, SeasonMessage, ServerRankMessage,
+                       CanyonSignupMessage)
 
 __all__ = ["Store", "IngestCounters", "SnapshotInfo", "utc_now"]
 
@@ -154,6 +155,19 @@ CREATE TABLE IF NOT EXISTS server_rank_rows (
 CREATE UNIQUE INDEX IF NOT EXISTS ux_server_rank_rows
     ON server_rank_rows (snapshot_id, COALESCE(raw_type, -1), uid);
 
+-- Inscrits du Canyon Storm (`quarantine.act.player.list`), une ligne par joueur
+-- inscrit. `team` est "A" ou "B" ; les non-inscrits ne sont pas stockes.
+CREATE TABLE IF NOT EXISTS canyon_signup_rows (
+    snapshot_id    INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+    team           TEXT    NOT NULL,
+    uid            TEXT    NOT NULL,
+    name           TEXT,
+    server_id      INTEGER,
+    role           TEXT                 -- "starter" | "substitute" | NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_canyon_signup_rows
+    ON canyon_signup_rows (snapshot_id, uid);
+
 -- Index du protocole : quelles commandes ont ete vues, combien de fois.
 -- Aucun contenu de payload n'est stocke.
 CREATE TABLE IF NOT EXISTS commands_seen (
@@ -202,6 +216,8 @@ class IngestCounters:
     camp_rows: int = 0
     server_rank_messages: int = 0
     server_rank_rows: int = 0
+    canyon_messages: int = 0
+    canyon_rows: int = 0
     commands: dict[str, int] = field(default_factory=dict)
 
     def note_command(self, command: str) -> None:
@@ -279,7 +295,8 @@ class Store:
             "     + (SELECT COUNT(*) FROM standings WHERE snapshot_id=:s)"
             "     + (SELECT COUNT(*) FROM member_rows WHERE snapshot_id=:s)"
             "     + (SELECT COUNT(*) FROM camp_rank_rows WHERE snapshot_id=:s)"
-            "     + (SELECT COUNT(*) FROM server_rank_rows WHERE snapshot_id=:s) AS n",
+            "     + (SELECT COUNT(*) FROM server_rank_rows WHERE snapshot_id=:s)"
+            "     + (SELECT COUNT(*) FROM canyon_signup_rows WHERE snapshot_id=:s) AS n",
             {"s": snapshot_id},
         ).fetchone()
         if rows and rows["n"] == 0:
@@ -295,7 +312,8 @@ class Store:
         for name, table in (("players", "rank_rows"), ("group", "group_rows"),
                             ("standing", "standings"), ("members", "member_rows"),
                             ("camp", "camp_rank_rows"),
-                            ("server", "server_rank_rows")):
+                            ("server", "server_rank_rows"),
+                            ("canyon", "canyon_signup_rows")):
             row = self.conn.execute(
                 f"SELECT COUNT(*) AS n FROM {table} WHERE snapshot_id=?", (snapshot_id,)
             ).fetchone()
@@ -469,6 +487,37 @@ class Store:
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY v.snapshot_id, v.raw_type, v.rank"
+        return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
+
+    def add_canyon_signup_message(self, snapshot_id: int,
+                                  msg: CanyonSignupMessage) -> int:
+        rows = [(snapshot_id, r.team, r.uid, r.name, r.server_id, r.role)
+                for r in msg.rows if r.uid]
+        self.conn.executemany(
+            "INSERT OR REPLACE INTO canyon_signup_rows"
+            "(snapshot_id, team, uid, name, server_id, role) VALUES (?,?,?,?,?,?)",
+            rows,
+        )
+        return len(rows)
+
+    def fetch_canyon_signup(self, team: str | None = None,
+                            snapshot: int | None = None) -> list[dict[str, Any]]:
+        sql = (
+            "SELECT s.captured_at AS captured_at, c.snapshot_id AS snapshot_id,"
+            " c.team, c.uid, c.name, c.server_id, c.role"
+            " FROM canyon_signup_rows c JOIN snapshots s ON s.id = c.snapshot_id"
+        )
+        where: list[str] = []
+        params: dict[str, Any] = {}
+        if snapshot is not None:
+            where.append("c.snapshot_id = :snapshot")
+            params["snapshot"] = snapshot
+        if team:
+            where.append("c.team = :team")
+            params["team"] = team
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY c.snapshot_id, c.team, c.name COLLATE NOCASE, c.uid"
         return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
 
     # -- resolution de TON alliance --------------------------------------

@@ -208,6 +208,8 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     print(f"  THP serveur  : {c.server_rank_messages} message(s),"
           f" {c.server_rank_rows} ligne(s) vues"
           f" -> {s.get('server', 0)} stockee(s)")
+    print(f"  Canyon       : {c.canyon_messages} message(s), {c.canyon_rows} ligne(s) vues"
+          f" -> {s.get('canyon', 0)} stockee(s)")
     if c.rank_rows > s.get("players", 0):
         print("  (l'ecart est normal : les retransmissions du meme classement sont"
               " ecrasees, jamais cumulees.)")

@@ -36,6 +36,9 @@ __all__ = [
     "CMD_SERVER_RANK",
     "ServerRankRow",
     "ServerRankMessage",
+    "CMD_CANYON_SIGNUP",
+    "CanyonSignupRow",
+    "CanyonSignupMessage",
     "parse_message",
     "MAIL_DESERT_STORM",
     "MAIL_CANYON_STORM",
@@ -115,8 +118,11 @@ CMD_CAMP_RANK = "lw.camp.battle.user.score.rank"
 #: Classement du serveur. C'est le SEUL message qui porte le THP (`heroPower`),
 #: et il couvre tout le serveur, pas seulement ton alliance.
 CMD_SERVER_RANK = "rank.get"
+#: Inscrits du Canyon Storm, par equipe. Le nom `quarantine` est celui du jeu,
+#: pas le notre. Voir `parse_canyon_signup`.
+CMD_CANYON_SIGNUP = "quarantine.act.player.list"
 VS_COMMANDS = (CMD_RANK, CMD_GROUP, CMD_SEASON, CMD_MEMBERS, CMD_CAMP_RANK,
-               CMD_SERVER_RANK)
+               CMD_SERVER_RANK, CMD_CANYON_SIGNUP)
 
 
 # ---------------------------------------------------------------------------
@@ -566,6 +572,75 @@ def parse_server_rank(body: Any) -> ServerRankMessage | None:
     )
 
 
+# ---------------------------------------------------------------------------
+# quarantine.act.player.list -- inscrits du Canyon Storm, par equipe
+# ---------------------------------------------------------------------------
+#
+# Etabli le 13/10/2026 sur la capture `captures/canyon` (l'ecran d'inscription
+# ouvert, onglets A puis B). Le message liste les 98 membres de TON alliance ;
+# `group` dit lequel est inscrit et dans quelle equipe : 0 = personne (52),
+# 1 = 22 joueurs, 2 = 24 joueurs. L'ecran affichait A = 22 et B = 24 : deux
+# effectifs differents, donc la correspondance 1 = A, 2 = B n'est pas un hasard.
+#
+# Ce qu'on NE lit PAS :
+#
+# * `state` : 1 = titulaire, 2 = remplacant. NON confirme a l'ecran, mais
+#   chaque equipe compte EXACTEMENT 20 joueurs a `state` 1 (le plafond de
+#   titulaires) plus un reste a `state` 2 : 2 en A, 4 en B (<= 10, le plafond de
+#   remplacants). Un plafond atteint pile dans les deux equipes ne se rencontre
+#   pas par hasard. Une autre valeur de `state` : pas de role, jamais devine.
+# * `heroPower` et `power` : on ne sait pas si `heroPower` est le THP de
+#   `rank.get` (rapport 1,08 a 1,17 selon le joueur sur les 44 communs, mais
+#   deux dates). On n'exporte pas une metrique qu'on ne sait pas nommer.
+#
+# Le meme message arrive plusieurs fois par capture (6 fois, identique) : la cle
+# (snapshot, uid) le ramene a une verite.
+
+_CANYON_TEAMS_BY_GROUP = {1: "A", 2: "B"}
+_CANYON_ROLES_BY_STATE = {1: "starter", 2: "substitute"}
+
+
+@dataclass(frozen=True)
+class CanyonSignupRow:
+    uid: str | None
+    name: str | None
+    team: str               # "A" | "B"
+    server_id: int | None
+    role: str | None = None     # "starter" | "substitute" | None (inconnu)
+
+
+@dataclass(frozen=True)
+class CanyonSignupMessage:
+    rows: tuple[CanyonSignupRow, ...] = ()
+
+
+def parse_canyon_signup(body: Any) -> CanyonSignupMessage | None:
+    if not isinstance(body, dict):
+        return None
+    entries = body.get("users")
+    if not isinstance(entries, list):
+        return None
+    rows: list[CanyonSignupRow] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        # group 0 = membre non inscrit ; une valeur inconnue est ecartee, pas
+        # rangee dans une equipe au hasard.
+        team = _CANYON_TEAMS_BY_GROUP.get(_as_int(entry.get("group")))
+        if team is None:
+            continue
+        rows.append(
+            CanyonSignupRow(
+                uid=_as_id(entry.get("uid")),
+                name=_as_str(entry.get("name")),
+                team=team,
+                server_id=_as_int(entry.get("serverId")),
+                role=_CANYON_ROLES_BY_STATE.get(_as_int(entry.get("state"))),
+            )
+        )
+    return CanyonSignupMessage(rows=tuple(rows))
+
+
 _PARSERS = {
     CMD_RANK: parse_rank,
     CMD_GROUP: parse_group,
@@ -573,6 +648,7 @@ _PARSERS = {
     CMD_MEMBERS: parse_members,
     CMD_CAMP_RANK: parse_camp_rank,
     CMD_SERVER_RANK: parse_server_rank,
+    CMD_CANYON_SIGNUP: parse_canyon_signup,
 }
 
 
