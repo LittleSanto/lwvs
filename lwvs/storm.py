@@ -11,6 +11,7 @@ A et B le vendredi, Canyon A et B le jeudi.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -88,18 +89,21 @@ def since_ms(text: str | None, now: datetime | None = None) -> int | None:
     """Periode saisie -> borne en ms UTC. CLI et GUI passent par ici.
 
     Vide : les `DEFAULT_DAYS` derniers jours. `all` : tout l'historique (None).
+    `last N days` : les N derniers jours (choix de la GUI).
     `AAAA-MM-JJ` : a partir de ce jour, 00:00 UTC.
     """
     text = (text or "").strip()
     if text.lower() == "all":
         return None
-    if not text:
+    last = re.fullmatch(r"last (\d+) days?", text.lower())
+    if not text or last:
         now = now or datetime.now(timezone.utc)
-        return int((now - timedelta(days=DEFAULT_DAYS)).timestamp() * 1000)
+        days = int(last.group(1)) if last else DEFAULT_DAYS
+        return int((now - timedelta(days=days)).timestamp() * 1000)
     try:
         day = datetime.strptime(text, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     except ValueError:
-        raise ValueError(f"period: expected YYYY-MM-DD, empty or 'all' -- not {text!r}") from None
+        raise ValueError(f"period: expected YYYY-MM-DD, 'last N days', empty or 'all' -- not {text!r}") from None
     return int(day.timestamp() * 1000)
 
 

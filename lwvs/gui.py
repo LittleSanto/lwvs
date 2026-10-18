@@ -42,6 +42,8 @@ from .store import DEFAULT_DB, Store
 
 TITLE = f"lwvs {__version__} — Last War VS capture"
 _POLL_MS = 120
+# Periodes proposees a cote de « Since » ; storm.since_ms sait toutes les lire.
+SINCE_CHOICES = ("last 7 days", "last 14 days", "last 30 days", "all")
 #: Plafond de la detection, pas une duree d'attente : elle s'arrete a la preuve.
 _DETECT_SECONDS = 20
 #: En dessous, la carte « Stats site » des reglages passe sous le bord de la
@@ -220,9 +222,11 @@ class App:
         self.autosend_var = tk.BooleanVar(value=bool(self.prefs.get("autosend", False)))
         self.keep_token_var = tk.BooleanVar(
             value=bool(self.prefs.get("keep_token", False)))
-        self.storm_since_var = tk.StringVar(value=self.prefs.get("storm_since", ""))
+        self.storm_since_var = tk.StringVar(
+            value=self.prefs.get("storm_since") or SINCE_CHOICES[0])
         self.storm_state_var = tk.StringVar(value="reading the game's mailbox…")
-        self.trains_since_var = tk.StringVar(value=self.prefs.get("trains_since", ""))
+        self.trains_since_var = tk.StringVar(
+            value=self.prefs.get("trains_since") or SINCE_CHOICES[0])
         self.trains_state_var = tk.StringVar(value="reading the game's mailbox…")
         self.net_var = tk.StringVar()
         for var in (self.iface_var, self.port_var):
@@ -569,11 +573,7 @@ class App:
         bar = tk.Frame(body, background=pal.surface)
         bar.pack(fill="x")
         theme.label(bar, pal, fonts, "Since", kind="muted").pack(side="left")
-        since = ttk.Entry(bar, textvariable=self.storm_since_var, width=11)
-        since.pack(side="left", padx=(6, 6))
-        since.bind("<Return>", lambda _e: self._refresh_storm())
-        theme.Tooltip(since, "empty = last 7 days\nYYYY-MM-DD = from that day\n"
-                             "all = the whole mailbox", pal, fonts)
+        self._since_box(bar, self.storm_since_var, self._refresh_storm)
         ttk.Button(bar, text="↻", width=3, style="Ghost.TButton",
                    command=self._refresh_storm).pack(side="left")
         self.storm_send_btn = ttk.Button(bar, text="Send to the site", state="disabled",
@@ -611,6 +611,15 @@ class App:
         theme.label(body, pal, fonts, kind="muted", textvariable=self.storm_state_var,
                     wraplength=520).pack(fill="x", pady=(8, 0))
 
+    def _since_box(self, bar: tk.Frame, var: tk.StringVar, refresh) -> None:
+        """Periode : un choix dans la liste, ou une date tapee a la main."""
+        box = ttk.Combobox(bar, textvariable=var, values=SINCE_CHOICES, width=13)
+        box.pack(side="left", padx=(6, 6))
+        box.bind("<<ComboboxSelected>>", lambda _e: refresh())
+        box.bind("<Return>", lambda _e: refresh())
+        theme.Tooltip(box, "Pick a period, or type a date:\n"
+                           "YYYY-MM-DD = from that day (UTC)", self.pal, self.fonts)
+
     def _build_trains(self, body: tk.Frame) -> None:
         """Trains d'alliance : conducteur, VIP ou Guardian, lus dans les mails.
 
@@ -625,11 +634,7 @@ class App:
         bar = tk.Frame(body, background=pal.surface)
         bar.pack(fill="x")
         theme.label(bar, pal, fonts, "Since", kind="muted").pack(side="left")
-        since = ttk.Entry(bar, textvariable=self.trains_since_var, width=11)
-        since.pack(side="left", padx=(6, 6))
-        since.bind("<Return>", lambda _e: self._refresh_trains())
-        theme.Tooltip(since, "empty = last 7 days\nYYYY-MM-DD = from that day\n"
-                             "all = the whole mailbox", pal, fonts)
+        self._since_box(bar, self.trains_since_var, self._refresh_trains)
         ttk.Button(bar, text="↻", width=3, style="Ghost.TButton",
                    command=self._refresh_trains).pack(side="left")
         self.trains_send_btn = ttk.Button(bar, text="Send to the site",
