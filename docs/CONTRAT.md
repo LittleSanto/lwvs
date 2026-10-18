@@ -57,6 +57,7 @@ le fil, elles sont exactes ou absentes. Le site ne doit pas les attendre.
 | `canyon_storm_rank` | points totaux d'**une** bataille de Canyon Storm (bataille + assistance + stratégie) | non — une bataille |
 | `alliance_train` | **pas de `score`** : qui conduisait **un** train, et son VIP ou Guardian | non — un train |
 | `canyon_signup_a`, `canyon_signup_b` | **pas de `score`** : qui est **inscrit** au Canyon Storm dans l'équipe A / B, titulaire ou remplaçant | non — un état à l'instant de la capture |
+| `desert_signup_a`, `desert_signup_b` | **pas de `score`** : qui est **inscrit** au Desert Storm dans l'équipe A / B (20 titulaires + 10 remplaçants), titulaire ou remplaçant | non — un état à l'instant de la capture |
 
 D'autres modes apparaîtront. **Le site doit accepter un `mode` inconnu** en le
 stockant tel quel plutôt qu'en rejetant le document : de nouvelles statistiques
@@ -416,6 +417,32 @@ un reste de 2 (A) et 4 (B) à l'autre valeur, sous le plafond de 10 remplaçants
 - Deux ouvertures de l'écran à des moments différents donnent deux documents
   (autre `exported_at`, donc autre `Idempotency-Key`, §5) : garder le plus récent
   par `(mode)`.
+
+### `desert_signup_a` / `desert_signup_b` — les inscrits d'une équipe
+
+Même source et même forme que le Canyon (ci-dessus), message
+`dragon.assign.player.info`. Un document par équipe ; `records[].role` vaut
+`"starter"` ou `"substitute"`, absent si la valeur est inconnue ; aucun `score`.
+
+**Établi le 15/10/2026** : 98 membres, et dans **chaque** équipe exactement
+20 titulaires + 10 remplaçants (les 20 + 10 annoncés par le joueur) ; 38 membres
+non inscrits, absents du document.
+
+Ce qui diffère du Canyon :
+
+- **Le message porte un champ `apply`** (0 pour 5 joueurs de A et 9 de B) dont le
+  sens n'est pas établi. Il n'est **pas lu** et n'exclut personne : tout joueur
+  d'une équipe est exporté, être dans l'équipe étant être inscrit.
+- **La lettre vient du créneau, pas de l'effectif.** Les deux équipes ont 30
+  joueurs : l'effectif ne départage rien. Tout joueur du groupe 1 qui a coché un créneau a
+  coché celui de 20:00 UTC, tout joueur du groupe 2 celui de 11:00 UTC ; la règle des
+  mails Desert (soir = **A**, début d'après-midi = **B**) donne donc 1 = A,
+  2 = B. C'est la même règle que `desert_storm_rank` (§ plus haut), mais ici
+  `context.team_source` vaut `"message"` : elle est lue sur le message, pas
+  déclarée. **Si le site constate l'inverse sur un cas connu, c'est cette
+  correspondance qu'il faut corriger, pas les rôles.**
+- Même limites que le Canyon : instantané, **ton alliance seulement**, deux
+  captures = deux documents (garder le plus récent par `mode`).
 
 ---
 

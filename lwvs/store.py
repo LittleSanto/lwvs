@@ -22,7 +22,7 @@ from typing import Any, Sequence
 
 from .messages import (CampRankMessage, GroupMessage, MembersMessage,
                        RankMessage, SeasonMessage, ServerRankMessage,
-                       CanyonSignupMessage)
+                       StormSignupMessage)
 
 __all__ = ["Store", "IngestCounters", "SnapshotInfo", "utc_now"]
 
@@ -155,18 +155,20 @@ CREATE TABLE IF NOT EXISTS server_rank_rows (
 CREATE UNIQUE INDEX IF NOT EXISTS ux_server_rank_rows
     ON server_rank_rows (snapshot_id, COALESCE(raw_type, -1), uid);
 
--- Inscrits du Canyon Storm (`quarantine.act.player.list`), une ligne par joueur
--- inscrit. `team` est "A" ou "B" ; les non-inscrits ne sont pas stockes.
-CREATE TABLE IF NOT EXISTS canyon_signup_rows (
+-- Equipes du Canyon / Desert Storm, une ligne par joueur INSCRIT. `event` est
+-- "canyon" ou "desert" : le meme joueur est dans les deux, d'ou l'evenement dans
+-- la cle d'unicite. `team` est "A" ou "B" ; les non-inscrits ne sont pas stockes.
+CREATE TABLE IF NOT EXISTS storm_signup_rows (
     snapshot_id    INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+    event          TEXT    NOT NULL,
     team           TEXT    NOT NULL,
     uid            TEXT    NOT NULL,
     name           TEXT,
     server_id      INTEGER,
     role           TEXT                 -- "starter" | "substitute" | NULL
 );
-CREATE UNIQUE INDEX IF NOT EXISTS ux_canyon_signup_rows
-    ON canyon_signup_rows (snapshot_id, uid);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_storm_signup_rows
+    ON storm_signup_rows (snapshot_id, event, uid);
 
 -- Index du protocole : quelles commandes ont ete vues, combien de fois.
 -- Aucun contenu de payload n'est stocke.
@@ -218,6 +220,10 @@ class IngestCounters:
     server_rank_rows: int = 0
     canyon_messages: int = 0
     canyon_rows: int = 0
+    desert_messages: int = 0
+    desert_rows: int = 0
+    desert_messages: int = 0
+    desert_rows: int = 0
     commands: dict[str, int] = field(default_factory=dict)
 
     def note_command(self, command: str) -> None:
@@ -296,7 +302,7 @@ class Store:
             "     + (SELECT COUNT(*) FROM member_rows WHERE snapshot_id=:s)"
             "     + (SELECT COUNT(*) FROM camp_rank_rows WHERE snapshot_id=:s)"
             "     + (SELECT COUNT(*) FROM server_rank_rows WHERE snapshot_id=:s)"
-            "     + (SELECT COUNT(*) FROM canyon_signup_rows WHERE snapshot_id=:s) AS n",
+            "     + (SELECT COUNT(*) FROM storm_signup_rows WHERE snapshot_id=:s) AS n",
             {"s": snapshot_id},
         ).fetchone()
         if rows and rows["n"] == 0:
@@ -312,12 +318,16 @@ class Store:
         for name, table in (("players", "rank_rows"), ("group", "group_rows"),
                             ("standing", "standings"), ("members", "member_rows"),
                             ("camp", "camp_rank_rows"),
-                            ("server", "server_rank_rows"),
-                            ("canyon", "canyon_signup_rows")):
+                            ("server", "server_rank_rows")):
             row = self.conn.execute(
                 f"SELECT COUNT(*) AS n FROM {table} WHERE snapshot_id=?", (snapshot_id,)
             ).fetchone()
             out[name] = int(row["n"])
+        for event in ("canyon", "desert"):
+            row = self.conn.execute(
+                "SELECT COUNT(*) AS n FROM storm_signup_rows"
+                " WHERE snapshot_id=? AND event=?", (snapshot_id, event)).fetchone()
+            out[event] = int(row["n"])
         return out
 
     def snapshots(self) -> list[SnapshotInfo]:
@@ -489,26 +499,27 @@ class Store:
         sql += " ORDER BY v.snapshot_id, v.raw_type, v.rank"
         return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
 
-    def add_canyon_signup_message(self, snapshot_id: int,
-                                  msg: CanyonSignupMessage) -> int:
-        rows = [(snapshot_id, r.team, r.uid, r.name, r.server_id, r.role)
+    def add_storm_signup_message(self, snapshot_id: int,
+                                 msg: StormSignupMessage) -> int:
+        rows = [(snapshot_id, msg.event, r.team, r.uid, r.name, r.server_id, r.role)
                 for r in msg.rows if r.uid]
         self.conn.executemany(
-            "INSERT OR REPLACE INTO canyon_signup_rows"
-            "(snapshot_id, team, uid, name, server_id, role) VALUES (?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO storm_signup_rows"
+            "(snapshot_id, event, team, uid, name, server_id, role)"
+            " VALUES (?,?,?,?,?,?,?)",
             rows,
         )
         return len(rows)
 
-    def fetch_canyon_signup(self, team: str | None = None,
-                            snapshot: int | None = None) -> list[dict[str, Any]]:
+    def fetch_storm_signup(self, event: str, team: str | None = None,
+                           snapshot: int | None = None) -> list[dict[str, Any]]:
         sql = (
             "SELECT s.captured_at AS captured_at, c.snapshot_id AS snapshot_id,"
             " c.team, c.uid, c.name, c.server_id, c.role"
-            " FROM canyon_signup_rows c JOIN snapshots s ON s.id = c.snapshot_id"
+            " FROM storm_signup_rows c JOIN snapshots s ON s.id = c.snapshot_id"
         )
-        where: list[str] = []
-        params: dict[str, Any] = {}
+        where: list[str] = ["c.event = :event"]
+        params: dict[str, Any] = {"event": event}
         if snapshot is not None:
             where.append("c.snapshot_id = :snapshot")
             params["snapshot"] = snapshot

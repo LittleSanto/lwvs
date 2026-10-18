@@ -12,7 +12,8 @@ from typing import Callable
 from .capture import CaptureSource
 from .messages import (
     CMD_CANYON_SIGNUP,
-    CanyonSignupMessage,
+    CMD_DESERT_SIGNUP,
+    StormSignupMessage,
     CMD_GROUP,
     CMD_CAMP_RANK,
     CMD_MEMBERS,
@@ -80,9 +81,15 @@ def ingest(
         elif command == CMD_SERVER_RANK and isinstance(msg, ServerRankMessage):
             counters.server_rank_messages += 1
             counters.server_rank_rows += store.add_server_rank_message(snapshot_id, msg)
-        elif command == CMD_CANYON_SIGNUP and isinstance(msg, CanyonSignupMessage):
-            counters.canyon_messages += 1
-            counters.canyon_rows += store.add_canyon_signup_message(snapshot_id, msg)
+        elif (command in (CMD_CANYON_SIGNUP, CMD_DESERT_SIGNUP)
+              and isinstance(msg, StormSignupMessage)):
+            added = store.add_storm_signup_message(snapshot_id, msg)
+            if msg.event == "canyon":
+                counters.canyon_messages += 1
+                counters.canyon_rows += added
+            else:
+                counters.desert_messages += 1
+                counters.desert_rows += added
         # Un commit par message : une transaction ouverte toute la capture
         # verrouille la base, et la GUI qui l'ouvre attend 5 s puis echoue.
         store.commit()

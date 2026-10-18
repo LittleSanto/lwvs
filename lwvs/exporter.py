@@ -41,7 +41,7 @@ __all__ = ["DATASETS", "COLUMNS", "Feed", "FEEDS", "FEEDS_BY_KEY", "OwnAlliance"
            "write_csv", "write_json", "write_doc", "build_records", "run_export",
            "STORM_MODES", "build_storm_records", "TRAIN_MODE", "build_train_records"]
 
-DATASETS = ("players", "group", "standing", "members", "camp", "server", "canyon")
+DATASETS = ("players", "group", "standing", "members", "camp", "server", "canyon", "desert")
 
 #: Valeur speciale de --alliance : resout TON alliance par la regle du
 #: protocole (position du groupe == position de duelInfo) plutot que de figer
@@ -70,8 +70,8 @@ COLUMNS: dict[str, tuple[str, ...]] = {
         "hero_power", "level", "country", "alliance_id", "alliance_abbr",
         "alliance_name", "src_server", "server_id",
     ),
-    "canyon": ("captured_at", "snapshot_id", "team", "uid", "name", "server_id",
-               "role"),
+    **{event: ("captured_at", "snapshot_id", "team", "uid", "name", "server_id",
+               "role") for event in ("canyon", "desert")},
     "members": (
         "captured_at", "snapshot_id", "alliance_id", "uid", "name", "army_kill",
         "power", "alliance_rank", "today_progress", "weekly_progress",
@@ -203,9 +203,9 @@ def collect(
         # `rank.get` porte `allianceId` : le filtre par alliance est un vrai
         # identifiant, pas un rabattement sur l'abreviation comme pour `camp`.
         rows = store.fetch_server_rank(alliance_ids=own_ids, snapshot=snapshot)
-    elif dataset == "canyon":
+    elif dataset in ("canyon", "desert"):
         # Le message est la liste de TON alliance : `scope` est l'equipe, A ou B.
-        rows = store.fetch_canyon_signup(team=scope, snapshot=snapshot)
+        rows = store.fetch_storm_signup(dataset, team=scope, snapshot=snapshot)
     elif dataset == "group":
         rows = store.fetch_group(alliance=alliance, snapshot=snapshot,
                                  alliance_ids=own_ids)
@@ -474,6 +474,28 @@ FEEDS: tuple[Feed, ...] = (
         hint="Idem, equipe B.",
     ),
     Feed(
+        key="desert_a",
+        label="Desert Storm — team A",
+        dataset="desert",
+        command="dragon.assign.player.info",
+        scope="A",
+        mode="desert_signup_a",
+        inherently_mine=True,
+        hint="Inscrits en equipe A au Desert Storm (20 titulaires + 10 "
+             "remplacants). Ouvre l'ecran des equipes pour le recevoir. Qui, "
+             "pas combien : aucun score.",
+    ),
+    Feed(
+        key="desert_b",
+        label="Desert Storm — team B",
+        dataset="desert",
+        command="dragon.assign.player.info",
+        scope="B",
+        mode="desert_signup_b",
+        inherently_mine=True,
+        hint="Idem, equipe B.",
+    ),
+    Feed(
         key="vs_total",
         label="VS points — duel total",
         dataset="players",
@@ -507,8 +529,8 @@ def build_records(
     event: str | None = None,
     metric: str | None = None,
 ) -> dict[str, Any]:
-    if dataset == "canyon":
-        return _build_canyon_records(rows, mode, scope)
+    if dataset in ("canyon", "desert"):
+        return _build_signup_records(rows, dataset, mode, scope)
     try:
         score_key, default_mode = _RECORD_METRICS[dataset]
     except KeyError:
@@ -617,7 +639,7 @@ def build_records(
 
 
 # ---------------------------------------------------------------------------
-# Inscrits du Canyon Storm -- un document par equipe
+# Equipes du Canyon / Desert Storm -- un document par evenement et par equipe
 # ---------------------------------------------------------------------------
 #
 # Le document dit QUI est inscrit et s'il est titulaire ou remplacant (`role`),
@@ -627,11 +649,8 @@ def build_records(
 # document, triee par pseudo : le message ne classe personne. L'equipe est dans
 # `context.team`, comme pour les rapports de Storm.
 
-CANYON_SIGNUP_MODE = "canyon_signup"
-
-
-def _build_canyon_records(rows: Sequence[dict[str, Any]], mode: str | None,
-                          team: str | None) -> dict[str, Any]:
+def _build_signup_records(rows: Sequence[dict[str, Any]], event: str,
+                          mode: str | None, team: str | None) -> dict[str, Any]:
     snapshots = {r.get("snapshot_id") for r in rows}
     if len(snapshots) > 1:
         raise ValueError(
@@ -650,8 +669,8 @@ def _build_canyon_records(rows: Sequence[dict[str, Any]], mode: str | None,
     ctx = {k: v for k, v in ctx.items() if v is not None}
     return {
         "exported_at": captured or datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "mode": mode or (f"{CANYON_SIGNUP_MODE}_{ctx['team'].lower()}"
-                         if "team" in ctx else CANYON_SIGNUP_MODE),
+        "mode": mode or (f"{event}_signup_{ctx['team'].lower()}"
+                         if "team" in ctx else f"{event}_signup"),
         "context": ctx,
         # Role inconnu = cle absente, jamais devinee (meme regle que les trains).
         "records": [{"rank": i + 1, "uid": r.get("uid"), "player_name": r.get("name"),

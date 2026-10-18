@@ -37,8 +37,9 @@ __all__ = [
     "ServerRankRow",
     "ServerRankMessage",
     "CMD_CANYON_SIGNUP",
-    "CanyonSignupRow",
-    "CanyonSignupMessage",
+    "CMD_DESERT_SIGNUP",
+    "StormSignupRow",
+    "StormSignupMessage",
     "parse_message",
     "MAIL_DESERT_STORM",
     "MAIL_CANYON_STORM",
@@ -121,8 +122,12 @@ CMD_SERVER_RANK = "rank.get"
 #: Inscrits du Canyon Storm, par equipe. Le nom `quarantine` est celui du jeu,
 #: pas le notre. Voir `parse_canyon_signup`.
 CMD_CANYON_SIGNUP = "quarantine.act.player.list"
+#: Idem pour le Desert Storm (`dragon.*` est le nom du jeu).
+CMD_DESERT_SIGNUP = "dragon.assign.player.info"
+#: Idem pour le Desert Storm (`dragon.*` est le nom du jeu).
+CMD_DESERT_SIGNUP = "dragon.assign.player.info"
 VS_COMMANDS = (CMD_RANK, CMD_GROUP, CMD_SEASON, CMD_MEMBERS, CMD_CAMP_RANK,
-               CMD_SERVER_RANK, CMD_CANYON_SIGNUP)
+               CMD_SERVER_RANK, CMD_CANYON_SIGNUP, CMD_DESERT_SIGNUP)
 
 
 # ---------------------------------------------------------------------------
@@ -573,9 +578,31 @@ def parse_server_rank(body: Any) -> ServerRankMessage | None:
 
 
 # ---------------------------------------------------------------------------
-# quarantine.act.player.list -- inscrits du Canyon Storm, par equipe
+# quarantine.act.player.list / dragon.assign.player.info -- equipes du Storm
 # ---------------------------------------------------------------------------
 #
+# DESERT STORM (`dragon.assign.player.info`, capture du 15/10/2026) : meme forme
+# que le Canyon, champ pour champ. 98 membres de ton alliance ; `group` 1 / 2 =
+# equipe, 0 = personne ; `state` 1 / 2 = titulaire / remplacant. Chaque equipe
+# compte EXACTEMENT 20 `state` 1 et 10 `state` 2, les 20 + 10 annonces par le
+# joueur -- ici le plafond de remplacants est atteint lui aussi.
+#
+# Ce qui change : le Desert porte AUSSI `chooseTimeList` (le creneau coche) et
+# `apply`, que le Canyon n'a pas. Etre dans une equipe EST etre inscrit (le
+# joueur le confirme) ; `apply` vaut 0 pour 5 joueurs de A et 9 de B sans que
+# son sens soit etabli : il n'est pas lu, et ne filtre rien. `group` 1 =
+# creneau de 20:00 UTC, 2 = 11:00 UTC : un joueur qui a coche un creneau a
+# coche celui de son groupe (et 3 du groupe 2 ont coche aussi l'autre). La regle
+# des mails Desert (soir = A) donne donc 1 = A, 2 = B -- les deux equipes ayant
+# 30 joueurs, l'effectif ne peut PAS departager la lettre, contrairement au
+# Canyon.
+#
+# Le message arrive sous deux variantes qui alternent : la liste complete, et
+# une variante ou 97 membres sont a `group` 0 et un seul est place (meme equipe
+# et meme role que dans la complete). Le parseur ignore `group` 0 : la variante
+# courte ne peut donc ni ajouter ni changer personne.
+#
+# CANYON STORM (`quarantine.act.player.list`)
 # Etabli le 13/10/2026 sur la capture `captures/canyon` (l'ecran d'inscription
 # ouvert, onglets A puis B). Le message liste les 98 membres de TON alliance ;
 # `group` dit lequel est inscrit et dans quelle equipe : 0 = personne (52),
@@ -601,7 +628,7 @@ _CANYON_ROLES_BY_STATE = {1: "starter", 2: "substitute"}
 
 
 @dataclass(frozen=True)
-class CanyonSignupRow:
+class StormSignupRow:
     uid: str | None
     name: str | None
     team: str               # "A" | "B"
@@ -610,17 +637,18 @@ class CanyonSignupRow:
 
 
 @dataclass(frozen=True)
-class CanyonSignupMessage:
-    rows: tuple[CanyonSignupRow, ...] = ()
+class StormSignupMessage:
+    event: str                      # "canyon" | "desert"
+    rows: tuple[StormSignupRow, ...] = ()
 
 
-def parse_canyon_signup(body: Any) -> CanyonSignupMessage | None:
+def _parse_signup(body: Any, event: str) -> StormSignupMessage | None:
     if not isinstance(body, dict):
         return None
     entries = body.get("users")
     if not isinstance(entries, list):
         return None
-    rows: list[CanyonSignupRow] = []
+    rows: list[StormSignupRow] = []
     for entry in entries:
         if not isinstance(entry, dict):
             continue
@@ -630,7 +658,7 @@ def parse_canyon_signup(body: Any) -> CanyonSignupMessage | None:
         if team is None:
             continue
         rows.append(
-            CanyonSignupRow(
+            StormSignupRow(
                 uid=_as_id(entry.get("uid")),
                 name=_as_str(entry.get("name")),
                 team=team,
@@ -638,7 +666,15 @@ def parse_canyon_signup(body: Any) -> CanyonSignupMessage | None:
                 role=_CANYON_ROLES_BY_STATE.get(_as_int(entry.get("state"))),
             )
         )
-    return CanyonSignupMessage(rows=tuple(rows))
+    return StormSignupMessage(event=event, rows=tuple(rows))
+
+
+def parse_canyon_signup(body: Any) -> StormSignupMessage | None:
+    return _parse_signup(body, "canyon")
+
+
+def parse_desert_signup(body: Any) -> StormSignupMessage | None:
+    return _parse_signup(body, "desert")
 
 
 _PARSERS = {
@@ -649,6 +685,7 @@ _PARSERS = {
     CMD_CAMP_RANK: parse_camp_rank,
     CMD_SERVER_RANK: parse_server_rank,
     CMD_CANYON_SIGNUP: parse_canyon_signup,
+    CMD_DESERT_SIGNUP: parse_desert_signup,
 }
 
 
