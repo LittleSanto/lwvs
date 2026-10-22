@@ -298,7 +298,17 @@ même contrat.
 ```bash
 $env:LWVS_TOKEN = "XXX"     # une fois par session PowerShell
 lwvs grab --iface ... --port ... -o exports/ --post https://mon-site/api/rankings
+lwvs check --post https://mon-site/api/rankings   # teste adresse + jeton, n'envoie rien
 ```
+
+Chaque alliance a sa propre adresse (`https://<alliance>.kwet.eu/api/rankings`) et
+son propre jeton, générés par ses R4 (R4 Tools → Push feed). `LWVS_URL` fait pour
+l'adresse ce que `LWVS_TOKEN` fait pour le jeton : `--post` la prend par défaut
+pour `grab`, `storm` et `trains`. Dans la GUI, l'adresse est préremplie avec GolD
+(`publish.DEFAULT_URL`) et se change dans Settings, sans recompiler ; elle accepte
+`slug.kwet.eu` tout court. « Test the connection » poste un corps vide : le site
+contrôle le jeton avant le corps (401 jeton faux, 503 envoi non activé, 422 « corps
+vide » = jeton accepté), rien n'est enregistré.
 
 Un `POST` par classement, `Content-Type: application/json; charset=utf-8`,
 `Authorization: Bearer` si `LWVS_TOKEN` (ou `--token`, qui reste en clair dans

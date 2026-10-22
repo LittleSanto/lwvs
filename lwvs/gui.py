@@ -36,7 +36,7 @@ from tkinter import filedialog, messagebox, ttk
 from . import (__version__, capture, events as events_mod, exporter, gamecache,
                identity, storm, theme, trains)
 from .capture import LiveSource, TsharkNotFound
-from .publish import publish
+from .publish import DEFAULT_URL, check_connection, normalize_url, publish
 from .ingest import ingest
 from .store import DEFAULT_DB, Store
 
@@ -148,7 +148,7 @@ def _iface_labels(ifaces: "list[capture.Interface]") -> dict[str, str]:
 class Msg:
     kind: str   # "log" | "progress" | "done" | "sent" | "error" | "ifaces"
                 # | "detecting" | "detected" | "detect_end" | "busy"
-                # | "no_tshark"
+                # | "no_tshark" | "check"
     payload: Any = None
 
 
@@ -217,7 +217,8 @@ class App:
         self.mine_var = tk.BooleanVar(value=bool(self.prefs.get("mine", True)))
         self.day_var = tk.StringVar(value=str(self.prefs.get("declare_day", "") or ""))
         self.event_var = tk.StringVar(value=self.prefs.get("event", ""))
-        self.url_var = tk.StringVar(value=self.prefs.get("post_url", ""))
+        self.url_var = tk.StringVar(value=self.prefs.get("post_url") or DEFAULT_URL)
+        self.check_var = tk.StringVar()
         self.token_var = tk.StringVar(value=self.prefs.get("post_token", ""))
         self.autosend_var = tk.BooleanVar(value=bool(self.prefs.get("autosend", False)))
         self.keep_token_var = tk.BooleanVar(
@@ -718,6 +719,19 @@ class App:
                     text="Sending publishes the names and ids of every player "
                          "in the ranking.").pack(side="left", fill="x")
 
+        theme.label(body, pal, fonts, kind="muted", wraplength=320,
+                    text="URL and token: your alliance's R4 Tools → Push feed "
+                         "page on the site.").grid(row=7, column=0, sticky="w",
+                                                    pady=(12, 0))
+        test_btn = ttk.Button(body, text="Test the connection",
+                              command=self._test_connection)
+        test_btn.grid(row=8, column=0, sticky="w", pady=(8, 0))
+        theme.Tooltip(test_btn, "Checks the URL and the token. "
+                      "Sends no ranking.", pal, fonts)
+        theme.label(body, pal, fonts, kind="muted", wraplength=320,
+                    textvariable=self.check_var).grid(row=9, column=0, sticky="w",
+                                                      pady=(6, 0))
+
     def _build_source(self, parent: tk.Frame) -> None:
         pal, fonts = self.pal, self.fonts
         outer, body = theme.card(parent, pal, fonts, "Network")
@@ -996,6 +1010,10 @@ class App:
             self._status("error", "err")
         elif msg.kind == "busy":
             self._set_busy(msg.payload)
+        elif msg.kind == "check":
+            ok, text = msg.payload
+            self.check_var.set(text)
+            self._say(text, "ok" if ok else "err")
         elif msg.kind == "no_tshark":
             self._tshark_missing = True
             self._apply_prereq()
@@ -1295,8 +1313,18 @@ class App:
         return (exporter.MINE
                 if self.mine_var.get() and not feed.inherently_mine else None)
 
+    def _test_connection(self) -> None:
+        # Variables Tk lues ICI, sur le thread UI ; le worker ne recoit que des valeurs.
+        url, token = normalize_url(self.url_var.get()), self.token_var.get().strip()
+        self.check_var.set("testing…")
+
+        def work():
+            ok, text = check_connection(url, token or None)
+            self.q.put(Msg("check", (ok, text)))
+        self._spawn(work)
+
     def _publish_all(self) -> None:
-        url = self.url_var.get().strip()
+        url = normalize_url(self.url_var.get())
         if not url:
             self._show_page("settings")
             messagebox.showinfo(TITLE, "Enter the site URL in Settings.")
@@ -1355,7 +1383,7 @@ class App:
                                       declared_day=jour, event=event)
 
     def _remember_send(self) -> None:
-        self.prefs["post_url"] = self.url_var.get().strip()
+        self.prefs["post_url"] = normalize_url(self.url_var.get())
         self.prefs["autosend"] = self.autosend_var.get()
         self.prefs["keep_token"] = self.keep_token_var.get()
         jour, event = self._declared()
