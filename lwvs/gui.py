@@ -1479,13 +1479,15 @@ class App:
         self._sync_buttons()
 
     def _storm_run(self, folder: str, url: str | None, token: str | None) -> None:
-        self._mail_run("storm", storm.export_storm, folder, url, token)
+        self._mail_run("storm", storm.export_storm, folder, url, token,
+                       t("{n} battle(s) written"))
 
     def _trains_run(self, folder: str, url: str | None, token: str | None) -> None:
-        self._mail_run("trains", trains.export_trains, folder, url, token)
+        self._mail_run("trains", trains.export_trains, folder, url, token,
+                       t("{n} train(s) written"))
 
     def _mail_run(self, name: str, export, folder: str, url: str | None,
-                  token: str | None) -> None:
+                  token: str | None, written: str) -> None:
         """Ecrit un JSON par bataille / train, puis l'envoie si `url` est donne."""
         try:
             since = storm.since_ms(self.since_var.get())
@@ -1516,7 +1518,7 @@ class App:
                                           f"  {pub.response.strip()[:180] or pub.error}"))
             for label, why in res.skipped:
                 self.q.put(Msg("log", f"  {label}: skipped — {why}"))
-            done = f"{name}: " + t("{n} file(s) written").format(n=len(res.written))
+            done = f"{name}: " + written.format(n=len(res.written))
             if url:
                 done += ", " + t("{n} sent").format(n=len(res.written) - failed)
             self.q.put(Msg(done_kind, (done, "err" if failed else "ok")))

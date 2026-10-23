@@ -201,7 +201,8 @@ _FR = {
     "export refused": "export refusé",
     "writing…": "écriture…",
     "nothing written": "rien d'écrit",
-    "{n} file(s) written": "{n} fichier(s) écrit(s)",
+    "{n} battle(s) written": "{n} bataille(s) écrite(s)",
+    "{n} train(s) written": "{n} train(s) écrit(s)",
     "{n} sent": "{n} envoyé(s)",
     # mails du jeu
     "reading the game's mailbox…": "lecture de la boîte mail du jeu…",
@@ -410,7 +411,8 @@ _DE = {
     "export refused": "Export abgelehnt",
     "writing…": "wird geschrieben…",
     "nothing written": "nichts geschrieben",
-    "{n} file(s) written": "{n} Datei(en) geschrieben",
+    "{n} battle(s) written": "{n} Schlacht(en) geschrieben",
+    "{n} train(s) written": "{n} Zug/Züge geschrieben",
     "{n} sent": "{n} gesendet",
     "reading the game's mailbox…": "Spielpostfach wird gelesen…",
     "game database not found under AppData\\LocalLow — has the game been run on "
