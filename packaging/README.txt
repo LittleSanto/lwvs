@@ -30,14 +30,16 @@ it explicitly.
 Usage
 -----
   1. Launch Last War.
-  2. In lwvs, "Capture" screen: "Start". The first time, lwvs finds the
+  2. In lwvs, "Stats" screen: "Start capture". The first time, lwvs finds the
      network interface and port by itself (a few seconds, keep the game
      open), then the capture starts.
   3. In the game, open the ranking screens you want (VS, members,
      server ranking...). Each screen opened = one ranking captured.
      A screen that is already open must be RELOADED (close, then reopen).
-  4. "Stop", then "Save JSON..." or "Send N rankings to the site".
-     The site URL and token are entered once, in "Settings".
+  4. "Stop", then "Save JSON..." or "Send N to the site". Both buttons
+     cover everything ready on the screen: rankings, Storm and trains.
+     The site URL and token are entered once, in "Settings", along with
+     the language (English, Français, Deutsch).
 
 The "Decoded fully" tile must stay at ~100%. Below that, decoding
 misses part of what goes by: report it.
@@ -48,8 +50,9 @@ No capture needed, and Wireshark is not used: lwvs reads the result mails
 the game already keeps on this PC (read-only, it never writes there).
 
   1. Play on this PC at least once after the battle, so the mail arrives.
-  2. In lwvs: "Mailbox" screen, "Storm" tab.
-     "Since" empty = last 7 days; a date (2026-09-14) or "all" goes further.
+  2. In lwvs: "Stats" screen, the Storm section of the table (read at
+     startup, ↻ to read again). "Mail since": last 7 days by default; a date
+     (2026-09-14) or "all" goes further.
   3. "Save JSON..." (one JSON per battle) or "Send to the site".
 
 One battle per team: Canyon A and B on Thursday, Desert A and B on Friday.
@@ -59,7 +62,7 @@ it "declared".
 
 Alliance trains
 ---------------
-Same source, same steps, in the "Trains" tab of "Mailbox". One JSON per train: the
+Same source, same steps, in the trains section of the "Stats" screen. One JSON per train: the
 conductor, then the VIP or the Guardian, plus the attacks it took. The day
 is the game's day (server time, UTC-2), so a train leaving at 01:14 UTC
 counts for the day before. A purchased train is marked as such: the daily,
@@ -69,7 +72,7 @@ What lwvs writes on your disk
 -----------------------------
 Nothing in this folder. Everything goes to:
   %LOCALAPPDATA%\lwvs\
-  - lwvs.gui.json   your settings (interface, port, site URL)
+  - lwvs.gui.json   your settings (interface, port, site URL, language)
   - identity.json   your alliance, remembered
   - lwvs.sqlite3    ONLY if you tick "Keep history locally"
 

@@ -34,8 +34,9 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from . import (__version__, capture, events as events_mod, exporter, gamecache,
-               identity, storm, theme, trains)
+               i18n, identity, storm, theme, trains)
 from .capture import LiveSource, TsharkNotFound
+from .i18n import t
 from .publish import publish
 from .ingest import ingest
 from .store import DEFAULT_DB, Store
@@ -58,6 +59,10 @@ _WIRESHARK_URL = "https://www.wireshark.org/download.html"
 #: on ne la traduit qu'a l'affichage.
 _SOURCE_LABELS = {"duel": "Duel screen", "roster": "member list",
                   "memoire": "memory"}
+
+#: Les trois familles du tableau unique : la capture, puis les deux lectures
+#: de la boite mail du jeu.
+_GROUPS = ("grp:capture", "grp:storm", "grp:trains")
 
 
 # Le defaut de `store` est RELATIF : lance depuis un raccourci (ou un .exe
@@ -164,6 +169,7 @@ class App:
         self.snapshot_id: int | None = None
         self.started_at: datetime | None = None
         self.prefs = _load_prefs(self.db_path)
+        i18n.set_lang(self.prefs.get("lang", "en"))
         # Par defaut on ne conserve rien : l'historisation est faite en aval.
         # SQLite reste le moteur de deduplication, mais dans un fichier
         # temporaire efface a la fermeture. (Pas `:memory:` : la GUI rouvre la
@@ -183,7 +189,7 @@ class App:
         self._storm_rows: list[dict[str, Any]] = []
         self._train_rows: list[dict[str, Any]] = []
         #: Ecran affiche et journal deplie : survivent au changement de theme.
-        self._page = "capture"
+        self._page = "home"
         self._log_open = False
         #: Start sans interface ni port : detecter d'abord, puis demarrer seul.
         self._start_after_detect = False
@@ -201,8 +207,7 @@ class App:
         # l'annuler, sinon il survit a la fenetre et touche des widgets morts.
         self._poll_id: str | None = self.root.after(_POLL_MS, self._drain)
         self._load_interfaces()
-        self._refresh_storm()
-        self._refresh_trains()
+        self._refresh_mail()
 
     # -- etat persistant --------------------------------------------------
     def _vars(self, keep: bool | None) -> None:
@@ -211,8 +216,8 @@ class App:
             value=bool(self.prefs.get("keep", False)) if keep is None else keep)
         self.iface_var = tk.StringVar()
         self.port_var = tk.StringVar(value=str(self.prefs.get("port", "")))
-        self.status_var = tk.StringVar(value="ready")
-        self.guard_var = tk.StringVar(value="no capture yet")
+        self.status_var = tk.StringVar(value=t("ready"))
+        self.guard_var = tk.StringVar(value=t("no capture yet"))
         self.alliance_var = tk.StringVar(value="")
         self.mine_var = tk.BooleanVar(value=bool(self.prefs.get("mine", True)))
         self.day_var = tk.StringVar(value=str(self.prefs.get("declare_day", "") or ""))
@@ -222,12 +227,11 @@ class App:
         self.autosend_var = tk.BooleanVar(value=bool(self.prefs.get("autosend", False)))
         self.keep_token_var = tk.BooleanVar(
             value=bool(self.prefs.get("keep_token", False)))
-        self.storm_since_var = tk.StringVar(
-            value=self.prefs.get("storm_since") or SINCE_CHOICES[0])
-        self.storm_state_var = tk.StringVar(value="reading the game's mailbox…")
-        self.trains_since_var = tk.StringVar(
-            value=self.prefs.get("trains_since") or SINCE_CHOICES[0])
-        self.trains_state_var = tk.StringVar(value="reading the game's mailbox…")
+        # Une seule periode pour Storm et trains : ils viennent de la meme boite.
+        self.since_var = tk.StringVar(
+            value=self.prefs.get("mail_since") or self.prefs.get("storm_since")
+            or SINCE_CHOICES[0])
+        self.lang_var = tk.StringVar(value=i18n.LANGS[i18n.current()])
         self.net_var = tk.StringVar()
         for var in (self.iface_var, self.port_var):
             var.trace_add("write", lambda *_: self._sync_net())
@@ -236,9 +240,9 @@ class App:
     def _sync_net(self) -> None:
         iface, port = self.iface_var.get(), self.port_var.get().strip()
         if not port.isdigit():
-            self.net_var.set("found by itself when you press Start")
+            self.net_var.set(t("found by itself when you press Start"))
         else:
-            self.net_var.set(f"{iface or 'no interface'}  ·  port {port}")
+            self.net_var.set(f"{iface or t('no interface')}  ·  {t('port')} {port}")
 
     def _restore_geometry(self) -> None:
         remembered = self.prefs.get("geometry", "")
@@ -262,9 +266,9 @@ class App:
         self.frame = tk.Frame(self.root, background=pal.bg)
         self.frame.pack(fill="both", expand=True)
 
-        # Un ecran par tache, choisi dans un menu lateral : capturer, lire les
-        # mails, regler. Les reglages qu'on ne touche qu'une fois ne se melent
-        # plus aux boutons qu'on presse a chaque capture.
+        # Deux ecrans seulement : tout ce qu'on fait a chaque bataille (capture
+        # ET mails du jeu) sur l'accueil, et a part les reglages qu'on ne touche
+        # qu'une fois.
         self._build_nav(self.frame)
         tk.Frame(self.frame, background=pal.border, width=1).pack(side="left", fill="y")
         main = tk.Frame(self.frame, background=pal.bg)
@@ -275,8 +279,7 @@ class App:
         body.pack(fill="both", expand=True, padx=24, pady=(20, 0))
         self.body_frame = body
         self.pages: dict[str, tk.Frame] = {}
-        for name, build in (("capture", self._build_capture_page),
-                            ("mailbox", self._build_mailbox_page),
+        for name, build in (("home", self._build_home_page),
                             ("settings", self._build_settings_page)):
             page = tk.Frame(body, background=pal.bg)
             page.place(relx=0, rely=0, relwidth=1, relheight=1)
@@ -284,8 +287,8 @@ class App:
             self.pages[name] = page
         self._show_page(self._page)
 
-        self._say("the JSON exports are the deliverable; nothing is kept "
-                  "locally unless you tick \"Keep history locally\" in Settings.")
+        self._say(t("the JSON exports are the deliverable; nothing is kept "
+                    "locally unless you tick \"Keep history locally\" in Settings."))
         self._apply_prereq()
 
     def _show_page(self, name: str) -> None:
@@ -305,8 +308,8 @@ class App:
                  foreground=pal.muted, font=fonts.small,
                  anchor="w").pack(fill="x", padx=24, pady=(0, 18))
         self.nav_btns: dict[str, ttk.Button] = {}
-        for key, text in (("capture", "◉   Capture"), ("mailbox", "✉   Mailbox"),
-                          ("settings", "⚙   Settings")):
+        for key, text in (("home", "◉   " + t("Stats")),
+                          ("settings", "⚙   " + t("Settings"))):
             btn = ttk.Button(nav, text=text, style="Nav.TButton",
                              command=lambda k=key: self._show_page(k))
             btn.pack(fill="x", padx=12, pady=2)
@@ -338,7 +341,7 @@ class App:
         if hint:
             tk.Label(text, text=hint, background=pal.bg, foreground=pal.muted,
                      font=fonts.small, anchor="w", justify="left",
-                     wraplength=560).pack(fill="x", pady=(2, 0))
+                     wraplength=440).pack(fill="x", pady=(2, 0))
         return head
 
     def _on_bg(self, parent: tk.Misc, text: str) -> tk.Label:
@@ -356,20 +359,20 @@ class App:
                                highlightbackground=pal.warn, highlightcolor=pal.warn)
         inner = tk.Frame(self.prereq, background=pal.surface)
         inner.pack(fill="x", padx=16, pady=12)
-        tk.Label(inner, text="⚠  Wireshark is required, and it could not be found",
+        tk.Label(inner, text="⚠  " + t("Wireshark is required, and it could not be found"),
                  background=pal.surface, foreground=pal.warn,
                  font=fonts.bold).pack(anchor="w")
         theme.label(
             inner, pal, fonts,
-            "lwvs does not sniff the network itself: it delegates to tshark, "
-            "which ships with Wireshark.\n"
-            "Install Wireshark leaving Npcap ticked, then restart lwvs.\n"
-            "When Npcap installs, DO NOT tick \"Restrict Npcap driver's access "
-            "to Administrators only\":\n"
-            "ticked, no interface will see a single packet unless lwvs runs as "
-            "administrator.",
+            t("lwvs does not sniff the network itself: it delegates to tshark, "
+              "which ships with Wireshark.\n"
+              "Install Wireshark leaving Npcap ticked, then restart lwvs.\n"
+              "When Npcap installs, DO NOT tick \"Restrict Npcap driver's access "
+              "to Administrators only\":\n"
+              "ticked, no interface will see a single packet unless lwvs runs as "
+              "administrator."),
             kind="muted").pack(anchor="w", pady=(6, 10))
-        ttk.Button(inner, text="Open the download page",
+        ttk.Button(inner, text=t("Open the download page"),
                    style="Accent.TButton",
                    command=lambda: webbrowser.open(_WIRESHARK_URL)).pack(anchor="w")
 
@@ -383,31 +386,39 @@ class App:
             btn = getattr(self, name, None)
             if btn is not None:
                 btn.configure(state="disabled")
-        self._status("Wireshark missing", "err")
+        self._status(t("Wireshark missing"), "err")
 
-    # -- ecran 1 : capture ------------------------------------------------
-    def _build_capture_page(self, page: tk.Frame) -> None:
+    # -- ecran 1 : accueil (capture + mails du jeu) ----------------------
+    def _build_home_page(self, page: tk.Frame) -> None:
+        """Un seul tableau : ce que la capture a vu, puis ce que la boite mail
+        du jeu contient (Storm, trains). Un seul « Envoyer » pour le tout.
+
+        Les mails ne passent jamais sur le fil : ils sont lus dans la base du
+        jeu, sans tshark, et rafraichis a l'ouverture.
+        """
         pal, fonts = self.pal, self.fonts
         head = self._page_head(
-            page, "Capture", "Open each VS tab in the game and let it load: the game "
-                             "only sends a ranking when its tab loads.")
-        self.stop_btn = ttk.Button(head, text="■  Stop", command=self._stop,
+            page, t("Stats"),
+            t("Capture: open each VS tab in the game and let it load. "
+              "Storm and trains are read from the game's mailbox on this PC, "
+              "no capture needed."))
+        self.stop_btn = ttk.Button(head, text="■  " + t("Stop"), command=self._stop,
                                    state="disabled")
         self.stop_btn.pack(side="right")
-        theme.Tooltip(self.stop_btn, "Stop capturing   ·   F5", pal, fonts)
-        self.start_btn = ttk.Button(head, text="▶  Start", style="Accent.TButton",
-                                    command=self._start)
+        theme.Tooltip(self.stop_btn, t("Stop capturing") + "   ·   F5", pal, fonts)
+        self.start_btn = ttk.Button(head, text="▶  " + t("Start capture"),
+                                    style="Accent.TButton", command=self._start)
         self.start_btn.pack(side="right", padx=(0, 8))
         theme.Tooltip(self.start_btn,
-                      "Start capturing   ·   F5\n"
-                      "The first time, the interface and port are found by\n"
-                      "themselves before the capture starts.", pal, fonts)
+                      t("Start capturing") + "   ·   F5\n"
+                      + t("The first time, the interface and port are found by\n"
+                          "themselves before the capture starts."), pal, fonts)
 
         tiles = tk.Frame(page, background=pal.bg)
         tiles.pack(fill="x", pady=(16, 12))
         for i in range(3):
             tiles.columnconfigure(i, weight=1, uniform="tile")
-        guard = self._tile(tiles, 0, "Decoded fully")
+        guard = self._tile(tiles, 0, t("Decoded fully"))
         # Le garde-fou est LE chiffre qui dit si on decode ce qu'on croit : il
         # merite une tuile, pas une ligne de texte gris perdue dans le journal.
         self.guard_bar = ttk.Progressbar(guard, style="Ok.Horizontal.TProgressbar",
@@ -416,52 +427,62 @@ class App:
         theme.label(guard, pal, fonts, kind="muted", textvariable=self.guard_var,
                     wraplength=220).pack(fill="x")
         theme.Tooltip(self.guard_bar,
-                      "Share of payloads decoded down to their last byte.\n"
-                      "Below 100 %, you are not decoding what you think.",
+                      t("Share of payloads decoded down to their last byte.\n"
+                        "Below 100 %, you are not decoding what you think."),
                       pal, fonts)
-        net = self._tile(tiles, 1, "Network")
+        net = self._tile(tiles, 1, t("Network"))
         theme.label(net, pal, fonts, kind="muted", textvariable=self.net_var,
                     wraplength=220).pack(fill="x")
-        ally = self._tile(tiles, 2, "Your alliance")
+        ally = self._tile(tiles, 2, t("Your alliance"))
         theme.label(ally, pal, fonts, kind="muted", textvariable=self.alliance_var,
                     wraplength=220).pack(fill="x")
 
         # La barre d'actions est posee AVANT le tableau : `pack` sert dans
         # l'ordre, et un tableau extensible pose d'abord ne lui laisserait rien.
-        bar = tk.Frame(page, background=pal.bg)
-        bar.pack(side="bottom", fill="x", pady=(12, 16))
-        self._on_bg(bar, "Day").pack(side="left")
+        outer_bar = tk.Frame(page, background=pal.bg)
+        outer_bar.pack(side="bottom", fill="x", pady=(12, 16))
+        # Deux lignes : ce que vous declarez, puis ce que vous faites. Sur une
+        # seule, la barre debordait a la largeur minimale (et en FR / DE).
+        bar = tk.Frame(outer_bar, background=pal.bg)
+        bar.pack(fill="x")
+        self._on_bg(bar, t("Day")).pack(side="left")
         ttk.Entry(bar, textvariable=self.day_var, width=4).pack(side="left",
                                                                 padx=(6, 14))
-        self._on_bg(bar, "Event").pack(side="left")
+        self._on_bg(bar, t("Event")).pack(side="left")
         # Liste fermee : un libelle libre fragmenterait le suivi en aval.
         self.event_box = ttk.Combobox(bar, textvariable=self.event_var, width=22,
                                       state="readonly")
         self.event_box.pack(side="left", padx=6)
-        theme.Tooltip(self.event_box, "Day and event are declared by you,\n"
-                                      "not read from the game.", pal, fonts)
+        theme.Tooltip(self.event_box, t("Day and event are declared by you,\n"
+                                        "not read from the game."), pal, fonts)
         add_btn = ttk.Button(bar, text="+", width=3, style="Ghost.TButton",
                              command=self._add_event)
         add_btn.pack(side="left")
-        theme.Tooltip(add_btn, "Add an event to the catalogue", pal, fonts)
+        theme.Tooltip(add_btn, t("Add an event to the catalogue"), pal, fonts)
         self._reload_events()
+        self._on_bg(bar, t("Mail since")).pack(side="left", padx=(14, 0))
+        self._since_box(bar)
+        bar = tk.Frame(outer_bar, background=pal.bg)
+        bar.pack(fill="x", pady=(8, 0))
         self.log_btn = ttk.Button(bar, style="Ghost.TButton", command=self._toggle_log)
-        self.log_btn.pack(side="left", padx=(14, 0))
+        self.log_btn.pack(side="left")
 
-        self.send_btn = ttk.Button(bar, text="Send to the site",
+        self.send_btn = ttk.Button(bar, text=t("Send to the site"),
                                    style="Accent.TButton",
-                                   command=self._publish_all, state="disabled")
+                                   command=self._send_all, state="disabled")
         self.send_btn.pack(side="right")
         theme.Tooltip(self.send_btn,
-                      "Publishes every ready ranking   ·   Ctrl+↵\n"
-                      "This sends the names and ids of every player in them.",
+                      t("Publishes every ready line (rankings, Storm, trains)")
+                      + "   ·   Ctrl+↵\n"
+                      + t("This sends the names and ids of every player in them."),
                       pal, fonts)
-        self.exportall_btn = ttk.Button(bar, text="Save JSON…",
+        self.exportall_btn = ttk.Button(bar, text=t("Save JSON…"),
                                         command=self._export_all, state="disabled")
         self.exportall_btn.pack(side="right", padx=8)
         theme.Tooltip(self.exportall_btn,
-                      "Writes one file per ready ranking   ·   Ctrl+Shift+E\n"
-                      "Double-click a row to save only that one   ·   Ctrl+E",
+                      t("Writes one file per ready line") + "   ·   Ctrl+Shift+E\n"
+                      + t("Double-click a ranking to save only that one")
+                      + "   ·   Ctrl+E",
                       pal, fonts)
 
         self.tree_holder = tk.Frame(page, background=pal.surface, highlightthickness=1,
@@ -470,18 +491,24 @@ class App:
         self.tree_holder.pack(fill="both", expand=True)
         self.tree = ttk.Treeview(self.tree_holder, columns=("vu", "etat", "lignes"),
                                  show="tree headings", height=7, selectmode="browse")
-        self.tree.heading("#0", text="Ranking", anchor="w")
-        self.tree.heading("vu", text="Messages", anchor="center")
-        self.tree.heading("etat", text="Status", anchor="w")
-        self.tree.heading("lignes", text="Rows", anchor="e")
+        self.tree.heading("#0", text=t("Data"), anchor="w")
+        self.tree.heading("vu", text=t("Messages"), anchor="center")
+        self.tree.heading("etat", text=t("Status / details"), anchor="w")
+        self.tree.heading("lignes", text=t("Rows"), anchor="e")
         self.tree.column("#0", width=280, minwidth=180)
         self.tree.column("vu", width=80, anchor="center", stretch=False)
-        self.tree.column("etat", width=260, anchor="w", stretch=False)
+        self.tree.column("etat", width=300, anchor="w")
         self.tree.column("lignes", width=60, anchor="e", stretch=False)
         # Une ligne prete garde la couleur du texte : peindre en vert les 4/5
         # des lignes ne signale plus rien. Seul l'anormal prend une couleur.
         for tag, colour in (("warn", pal.warn), ("muted", pal.muted)):
             self.tree.tag_configure(tag, foreground=colour)
+        self.tree.tag_configure("group", font=fonts.bold)
+        for iid, text in zip(_GROUPS, (t("Rankings — capture"),
+                                       t("Desert / Canyon Storm — mailbox"),
+                                       t("Alliance trains — mailbox"))):
+            self.tree.insert("", "end", iid=iid, text=text, open=True,
+                             tags=("group",))
         scroll = ttk.Scrollbar(self.tree_holder, style="Slim.Vertical.TScrollbar",
                                command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll.set)
@@ -525,9 +552,9 @@ class App:
 
         bar = tk.Frame(self.log_panel, background=pal.bg)
         bar.pack(fill="x", pady=(6, 0))
-        ttk.Button(bar, text="Copy", style="Ghost.TButton",
+        ttk.Button(bar, text=t("Copy"), style="Ghost.TButton",
                    command=self._copy_log).pack(side="right")
-        ttk.Button(bar, text="Clear", style="Ghost.TButton",
+        ttk.Button(bar, text=t("Clear"), style="Ghost.TButton",
                    command=self._clear_log).pack(side="right", padx=8)
         self._toggle_log(self._log_open)
 
@@ -537,143 +564,29 @@ class App:
             self.log_panel.pack(side="bottom", fill="x", before=self.tree_holder)
         else:
             self.log_panel.pack_forget()
-        self.log_btn.configure(text="Hide log" if self._log_open else "Show log")
+        self.log_btn.configure(text=t("Hide log") if self._log_open else t("Show log"))
 
-    # -- ecran 2 : mails du jeu -------------------------------------------
-    def _build_mailbox_page(self, page: tk.Frame) -> None:
-        pal, fonts = self.pal, self.fonts
-        self._page_head(page, "Mailbox",
-                        "Read from the game's own mailbox on this PC — no capture "
-                        "needed. Just open the game once after the battle.")
-        outer, card_body = theme.card(page, pal, fonts)
-        outer.pack(fill="both", expand=True, pady=(16, 16))
-        # Storm et trains ont la meme source et les memes gestes : deux onglets
-        # d'un meme ecran, pas deux ecrans.
-        self.results_tabs = ttk.Notebook(card_body, style="Card.TNotebook")
-        self.results_tabs.pack(fill="both", expand=True)
-        storm_tab = tk.Frame(self.results_tabs, background=pal.surface)
-        trains_tab = tk.Frame(self.results_tabs, background=pal.surface)
-        self.results_tabs.add(storm_tab, text="Storm")
-        self.results_tabs.add(trains_tab, text="Trains")
-        self._build_storm(storm_tab)
-        self._build_trains(trains_tab)
+    def _since_box(self, bar: tk.Frame) -> None:
+        """Periode des mails : un choix dans la liste, ou une date tapee a la main."""
+        box = ttk.Combobox(bar, textvariable=self.since_var, values=SINCE_CHOICES,
+                           width=13)
+        box.pack(side="left", padx=(6, 0))
+        box.bind("<<ComboboxSelected>>", lambda _e: self._refresh_mail())
+        box.bind("<Return>", lambda _e: self._refresh_mail())
+        theme.Tooltip(box, t("Period for Storm and trains. Pick one, or type a date:\n"
+                             "YYYY-MM-DD = from that day (UTC)"), self.pal, self.fonts)
+        refresh = ttk.Button(bar, text="↻", width=3, style="Ghost.TButton",
+                             command=self._refresh_mail)
+        refresh.pack(side="left", padx=(4, 0))
+        theme.Tooltip(refresh, t("Read the game's mailbox again"), self.pal, self.fonts)
 
-    def _build_storm(self, body: tk.Frame) -> None:
-        """Desert / Canyon Storm : hors capture, lu dans la base du jeu.
+    def _group_state(self, group: str, text: str) -> None:
+        """Le resume d'une famille s'affiche sur sa ligne de titre."""
+        self.tree.set(group, "etat", text)
 
-        Ecran a part, et non des lignes du tableau de la capture : ce tableau
-        dit ce qu'une CAPTURE a vu, et les mails ne passent jamais sur le fil
-        quand on les ouvre. Rien ici ne depend de tshark.
-        """
-        pal, fonts = self.pal, self.fonts
-        theme.label(body, pal, fonts, kind="muted",
-                    text="One battle per team: Canyon on Thursday, Desert on "
-                         "Friday.", wraplength=520).pack(fill="x", pady=(0, 10))
-
-        bar = tk.Frame(body, background=pal.surface)
-        bar.pack(fill="x")
-        theme.label(bar, pal, fonts, "Since", kind="muted").pack(side="left")
-        self._since_box(bar, self.storm_since_var, self._refresh_storm)
-        ttk.Button(bar, text="↻", width=3, style="Ghost.TButton",
-                   command=self._refresh_storm).pack(side="left")
-        self.storm_send_btn = ttk.Button(bar, text="Send to the site", state="disabled",
-                                         style="Accent.TButton",
-                                         command=self._storm_send)
-        self.storm_send_btn.pack(side="right")
-        theme.Tooltip(self.storm_send_btn,
-                      "Writes one JSON per battle, then sends them to the site\n"
-                      "(URL and token from Settings)", pal, fonts)
-        self.storm_export_btn = ttk.Button(bar, text="Save JSON…", state="disabled",
-                                           command=self._storm_export)
-        self.storm_export_btn.pack(side="right", padx=8)
-        theme.Tooltip(self.storm_export_btn, "One JSON file per battle", pal, fonts)
-
-        holder = tk.Frame(body, background=pal.surface)
-        holder.pack(fill="both", expand=True, pady=(10, 0))
-        self.storm_tree = ttk.Treeview(
-            holder, columns=("team", "players", "camps", "result"),
-            show="tree headings", height=6, selectmode="none")
-        for col, text, width, anchor in (("#0", "Battle", 190, "w"),
-                                         ("team", "Team", 90, "w"),
-                                         ("players", "Players", 70, "e"),
-                                         ("camps", "Camps", 200, "w"),
-                                         ("result", "Result", 60, "w")):
-            self.storm_tree.heading(col, text=text, anchor=anchor)
-            self.storm_tree.column(col, width=width, anchor=anchor,
-                                   stretch=col in ("#0", "camps"))
-        self.storm_tree.tag_configure("loss", foreground=pal.muted)
-        scroll = ttk.Scrollbar(holder, style="Slim.Vertical.TScrollbar",
-                               command=self.storm_tree.yview)
-        self.storm_tree.configure(yscrollcommand=scroll.set)
-        self.storm_tree.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
-
-        theme.label(body, pal, fonts, kind="muted", textvariable=self.storm_state_var,
-                    wraplength=520).pack(fill="x", pady=(8, 0))
-
-    def _since_box(self, bar: tk.Frame, var: tk.StringVar, refresh) -> None:
-        """Periode : un choix dans la liste, ou une date tapee a la main."""
-        box = ttk.Combobox(bar, textvariable=var, values=SINCE_CHOICES, width=13)
-        box.pack(side="left", padx=(6, 6))
-        box.bind("<<ComboboxSelected>>", lambda _e: refresh())
-        box.bind("<Return>", lambda _e: refresh())
-        theme.Tooltip(box, "Pick a period, or type a date:\n"
-                           "YYYY-MM-DD = from that day (UTC)", self.pal, self.fonts)
-
-    def _build_trains(self, body: tk.Frame) -> None:
-        """Trains d'alliance : conducteur, VIP ou Guardian, lus dans les mails.
-
-        Meme source et meme discipline que Storm. Le tableau ne montre aucun
-        pseudo : qui conduisait sort par l'export, pas par l'ecran.
-        """
-        pal, fonts = self.pal, self.fonts
-        theme.label(body, pal, fonts, kind="muted",
-                    text="One line per train: conductor, VIP or Guardian, "
-                         "attacks.", wraplength=520).pack(fill="x", pady=(0, 10))
-
-        bar = tk.Frame(body, background=pal.surface)
-        bar.pack(fill="x")
-        theme.label(bar, pal, fonts, "Since", kind="muted").pack(side="left")
-        self._since_box(bar, self.trains_since_var, self._refresh_trains)
-        ttk.Button(bar, text="↻", width=3, style="Ghost.TButton",
-                   command=self._refresh_trains).pack(side="left")
-        self.trains_send_btn = ttk.Button(bar, text="Send to the site",
-                                          state="disabled", style="Accent.TButton",
-                                          command=self._trains_send)
-        self.trains_send_btn.pack(side="right")
-        theme.Tooltip(self.trains_send_btn,
-                      "Writes one JSON per train, then sends them to the site\n"
-                      "(URL and token from Settings)", pal, fonts)
-        self.trains_export_btn = ttk.Button(bar, text="Save JSON…", state="disabled",
-                                            command=self._trains_export)
-        self.trains_export_btn.pack(side="right", padx=8)
-        theme.Tooltip(self.trains_export_btn, "One JSON file per train", pal, fonts)
-
-        holder = tk.Frame(body, background=pal.surface)
-        holder.pack(fill="both", expand=True, pady=(10, 0))
-        self.trains_tree = ttk.Treeview(
-            holder, columns=("escort", "passengers", "trip"),
-            show="tree headings", height=6, selectmode="none")
-        for col, text, width, anchor in (("#0", "Train (game day)", 220, "w"),
-                                         ("escort", "Escort", 90, "w"),
-                                         ("passengers", "Passengers", 80, "e"),
-                                         ("trip", "Trip", 200, "w")):
-            self.trains_tree.heading(col, text=text, anchor=anchor)
-            self.trains_tree.column(col, width=width, anchor=anchor,
-                                    stretch=col in ("#0", "trip"))
-        self.trains_tree.tag_configure("enroute", foreground=pal.muted)
-        scroll = ttk.Scrollbar(holder, style="Slim.Vertical.TScrollbar",
-                               command=self.trains_tree.yview)
-        self.trains_tree.configure(yscrollcommand=scroll.set)
-        self.trains_tree.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
-
-        theme.label(body, pal, fonts, kind="muted", textvariable=self.trains_state_var,
-                    wraplength=520).pack(fill="x", pady=(8, 0))
-
-    # -- ecran 3 : reglages -----------------------------------------------
+    # -- ecran 2 : reglages -----------------------------------------------
     def _build_settings_page(self, page: tk.Frame) -> None:
-        self._page_head(page, "Settings")
+        self._page_head(page, t("Settings"))
         cols = tk.Frame(page, background=self.pal.bg)
         cols.pack(fill="both", expand=True, pady=(16, 16))
         cols.columnconfigure((0, 1), weight=1, uniform="col")
@@ -687,7 +600,7 @@ class App:
 
     def _build_send(self, parent: tk.Frame) -> None:
         pal, fonts = self.pal, self.fonts
-        outer, body = theme.card(parent, pal, fonts, "Stats site")
+        outer, body = theme.card(parent, pal, fonts, t("Stats site"))
         outer.pack(fill="x")
         body.columnconfigure(0, weight=1)
 
@@ -701,12 +614,12 @@ class App:
         ttk.Entry(body, textvariable=self.token_var, width=10, show="•").grid(
             row=3, column=0, sticky="we", pady=(3, 0))
 
-        theme.Check(body, pal, fonts, "Send automatically when a capture stops",
+        theme.Check(body, pal, fonts, t("Send automatically when a capture stops"),
                     self.autosend_var).grid(row=4, column=0, sticky="w",
                                             pady=(10, 0))
         # Un jeton en clair dans un fichier est un vrai risque : on ne le retient
         # que sur demande explicite, et on le dit.
-        theme.Check(body, pal, fonts, "Remember the token (plain text on this PC)",
+        theme.Check(body, pal, fonts, t("Remember the token (plain text on this PC)"),
                     self.keep_token_var).grid(row=5, column=0, sticky="w", pady=(4, 0))
 
         warn = tk.Frame(body, background=pal.surface)
@@ -715,23 +628,23 @@ class App:
         dot.pack(side="left", padx=(0, 7), pady=(4, 0), anchor="n")
         dot.colour(pal.warn)
         theme.label(warn, pal, fonts, kind="muted", wraplength=320,
-                    text="Sending publishes the names and ids of every player "
-                         "in the ranking.").pack(side="left", fill="x")
+                    text=t("Sending publishes the names and ids of every player "
+                           "in the ranking.")).pack(side="left", fill="x")
 
     def _build_source(self, parent: tk.Frame) -> None:
         pal, fonts = self.pal, self.fonts
-        outer, body = theme.card(parent, pal, fonts, "Network")
+        outer, body = theme.card(parent, pal, fonts, t("Network"))
         outer.pack(fill="x", pady=(0, 16))
         body.columnconfigure(0, weight=1)
         body.columnconfigure(1, minsize=90)
 
         theme.label(body, pal, fonts, kind="muted", wraplength=360,
-                    text="Found by itself when you press Start. Change it only "
-                         "if detection fails.").grid(row=0, column=0, columnspan=2,
-                                                     sticky="w", pady=(0, 10))
-        theme.label(body, pal, fonts, "Network interface", kind="muted").grid(
+                    text=t("Found by itself when you press Start. Change it only "
+                           "if detection fails.")).grid(row=0, column=0, columnspan=2,
+                                                        sticky="w", pady=(0, 10))
+        theme.label(body, pal, fonts, t("Network interface"), kind="muted").grid(
             row=1, column=0, sticky="w")
-        theme.label(body, pal, fonts, "Game port", kind="muted").grid(
+        theme.label(body, pal, fonts, t("Game port"), kind="muted").grid(
             row=1, column=1, sticky="w", padx=(10, 0))
         self.iface_box = ttk.Combobox(body, textvariable=self.iface_var,
                                       state="readonly", width=10)
@@ -739,36 +652,44 @@ class App:
         self.iface_box.configure(values=self._iface_values)
         # Le device reste consultable : c'est lui qu'on copie dans un --iface.
         theme.Tooltip(self.iface_box,
-                      lambda: self._iface_device() or "no interface", pal, fonts)
+                      lambda: self._iface_device() or t("no interface"), pal, fonts)
         port_entry = ttk.Entry(body, textvariable=self.port_var, width=8)
         port_entry.grid(row=2, column=1, sticky="we", padx=(10, 0), pady=(3, 0))
 
         # Un seul bouton : interface et port se prouvent par le MEME signal,
         # une trame du jeu qui decode jusqu'a son dernier octet. Les demander
         # separement etait deux attentes a la file pour une seule reponse.
-        self.detect_btn = ttk.Button(body, text="⌖  Detect again",
+        self.detect_btn = ttk.Button(body, text="⌖  " + t("Detect again"),
                                      style="Ghost.TButton", command=self._detect)
         self.detect_btn.grid(row=3, column=0, columnspan=2, sticky="w",
                              pady=(12, 0))
         theme.Tooltip(self.detect_btn,
-                      "Listens on every interface at once and stops as soon\n"
-                      "as a game frame is recognised — a few seconds if the\n"
-                      "game is running.   ·   F4",
+                      t("Listens on every interface at once and stops as soon\n"
+                        "as a game frame is recognised — a few seconds if the\n"
+                        "game is running.") + "   ·   F4",
                       pal, fonts)
 
     def _build_data(self, parent: tk.Frame) -> None:
         pal, fonts = self.pal, self.fonts
-        outer, body = theme.card(parent, pal, fonts, "Data and display")
+        outer, body = theme.card(parent, pal, fonts, t("Data and display"))
         outer.pack(fill="x")
-        theme.Check(body, pal, fonts, "My alliance only", self.mine_var,
+        theme.Check(body, pal, fonts, t("My alliance only"), self.mine_var,
                     command=self._refresh_feeds).pack(anchor="w")
-        keep_box = theme.Check(body, pal, fonts, "Keep history locally",
+        keep_box = theme.Check(body, pal, fonts, t("Keep history locally"),
                                self._keep, command=self._refresh_feeds)
         keep_box.pack(anchor="w", pady=(4, 0))
-        theme.Tooltip(keep_box, "Unticked, the session database is deleted on\n"
-                                "close: only the JSON exports remain.",
+        theme.Tooltip(keep_box, t("Unticked, the session database is deleted on\n"
+                                  "close: only the JSON exports remain."),
                       pal, fonts)
-        ttk.Button(body, text="☀  Light theme" if pal.dark else "☾  Dark theme",
+        lang = tk.Frame(body, background=pal.surface)
+        lang.pack(anchor="w", pady=(12, 0))
+        theme.label(lang, pal, fonts, t("Language"), kind="muted").pack(side="left")
+        box = ttk.Combobox(lang, textvariable=self.lang_var, state="readonly",
+                           values=list(i18n.LANGS.values()), width=12)
+        box.pack(side="left", padx=(8, 0))
+        box.bind("<<ComboboxSelected>>", lambda _e: self._set_lang())
+        ttk.Button(body, text="☀  " + t("Light theme") if pal.dark
+                   else "☾  " + t("Dark theme"),
                    style="Ghost.TButton",
                    command=self._toggle_theme).pack(anchor="w", pady=(12, 0))
 
@@ -779,23 +700,36 @@ class App:
         self.root.bind("<F4>", lambda _e: self._detect())
         self.root.bind("<Control-e>", lambda _e: self._export())
         self.root.bind("<Control-E>", lambda _e: self._export_all())
-        self.root.bind("<Control-Return>", lambda _e: self._publish_all())
+        self.root.bind("<Control-Return>", lambda _e: self._send_all())
 
     def _toggle_theme(self) -> None:
         self.prefs["theme"] = "clair" if self.pal.dark else "sombre"
+        self._rebuild()
+
+    def _set_lang(self) -> None:
+        code = next(c for c, name in i18n.LANGS.items()
+                    if name == self.lang_var.get())
+        if code == i18n.current():
+            return
+        self.prefs["lang"] = code
+        i18n.set_lang(code)
+        self._rebuild()
+
+    def _rebuild(self) -> None:
+        """Reconstruit tous les widgets (theme ou langue), journal conserve."""
         _save_prefs(self.db_path, self.prefs)
         history = self.log.get("1.0", "end-1c")
         self.frame.destroy()
-        self.pal, self.fonts = theme.apply(self.root, self.prefs["theme"])
+        self.pal, self.fonts = theme.apply(self.root, self.prefs.get("theme", "sombre"))
         self._build()
         self.log.configure(state="normal")
         self.log.delete("1.0", "end")
         self.log.insert("end", history + "\n" if history else "")
         self.log.see("end")
         self.log.configure(state="disabled")
+        self._sync_net()
         self._refresh_feeds()
-        self._refresh_storm()
-        self._refresh_trains()
+        self._refresh_mail()
 
     # -- utilitaires UI ---------------------------------------------------
     def _say(self, text: str, kind: str = "") -> None:
@@ -817,7 +751,7 @@ class App:
     def _copy_log(self) -> None:
         self.root.clipboard_clear()
         self.root.clipboard_append(self.log.get("1.0", "end-1c"))
-        self._say("log copied to the clipboard.")
+        self._say(t("log copied to the clipboard."))
 
     def _status(self, text: str, kind: str = "idle") -> None:
         self.status_var.set(text)
@@ -868,9 +802,9 @@ class App:
         worker lèverait « main thread is not in main loop ».
         """
         prefer = self._iface_device()
-        self._say("detecting: listening on every interface at once, stopping "
-                  "as soon as a game frame is recognised. Keep the game open.")
-        self._status("detecting…", "busy")
+        self._say(t("detecting: listening on every interface at once, stopping "
+                    "as soon as a game frame is recognised. Keep the game open."))
+        self._status(t("detecting…"), "busy")
         self.detect_btn.configure(state="disabled")
         self.start_btn.configure(state="disabled")
 
@@ -900,12 +834,12 @@ class App:
         problem = found.diagnosis()
         if problem:
             self._say(f"[error] {problem}")
-            self._status("detection found nothing", "err")
+            self._status(t("detection found nothing"), "err")
             return
         self.port_var.set(str(found.port))
         self._say(f"-> {found.iface.name or found.iface.device}, port "
                   f"{found.port} — found in {found.seconds:.0f} s.", "ok")
-        self._status("interface and port found", "ok")
+        self._status(t("interface and port found"), "ok")
         if then_start:
             self._start()
 
@@ -949,8 +883,8 @@ class App:
         self._seen = {}
         self.start_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
-        self._status("capturing…", "busy")
-        self._say(f"capture started on port {port}")
+        self._status(t("capturing…"), "busy")
+        self._say(t("capture started on port {port}").format(port=port))
 
         source = self.source
         # Resolu ICI : `_active_db()` lit la variable Tk `_keep`, et la lire
@@ -974,8 +908,8 @@ class App:
     def _stop(self) -> None:
         if self.source is not None:
             self.source.stop()
-            self._status("stopping…", "busy")
-            self._say("stop requested — frames already received are being processed.")
+            self._status(t("stopping…"), "busy")
+            self._say(t("stop requested — frames already received are being processed."))
         self.stop_btn.configure(state="disabled")
 
     # -- boucle de drainage ----------------------------------------------
@@ -993,14 +927,14 @@ class App:
             self._say(msg.payload)
         elif msg.kind == "error":
             self._say(f"[error] {msg.payload}")
-            self._status("error", "err")
+            self._status(t("error"), "err")
         elif msg.kind == "busy":
             self._set_busy(msg.payload)
         elif msg.kind == "no_tshark":
             self._tshark_missing = True
             self._apply_prereq()
-            self._say("tshark not found: install Wireshark (see the top of the "
-                      "window), then restart lwvs.", "err")
+            self._say(t("tshark not found: install Wireshark (see the top of the "
+                        "window), then restart lwvs."), "err")
         elif msg.kind == "ifaces":
             self._iface_by_label = _iface_labels(msg.payload)
             values = list(self._iface_by_label)
@@ -1017,8 +951,10 @@ class App:
                 self.iface_var.set(match or (values[0] if values else ""))
         elif msg.kind == "detecting":
             remaining, packets, exact = msg.payload
-            self._status(f"detecting… {remaining} s max · {packets} packets"
-                         + (f" · {exact} game frames" if exact else ""), "busy")
+            self._status(t("detecting… {s} s max · {n} packets").format(
+                s=remaining, n=packets)
+                + (" · " + t("{n} game frames").format(n=exact) if exact else ""),
+                "busy")
         elif msg.kind == "detected":
             self._detected(msg.payload)
         elif msg.kind == "detect_end":
@@ -1028,7 +964,7 @@ class App:
                 self.start_btn.configure(state="normal")
         elif msg.kind == "progress":
             if msg.payload is None:
-                self._status("ready")
+                self._status(t("ready"))
                 return
             payloads, decoded, exact, failed, commands = msg.payload
             elapsed = ""
@@ -1044,30 +980,27 @@ class App:
         elif msg.kind == "sent":
             self._sync_buttons()
             if msg.payload:
-                self._say("send complete.", "ok")
-                self._status("send complete", "ok")
+                self._say(t("send complete."), "ok")
+                self._status(t("send complete"), "ok")
         elif msg.kind == "done":
             self._finish(msg.payload)
         elif msg.kind == "storm_list":
             self._storm_listed(msg.payload)
         elif msg.kind == "storm_unavailable":
             self._storm_rows = []
-            self.storm_tree.delete(*self.storm_tree.get_children())
-            self.storm_state_var.set(f"⚠ {msg.payload}")
-            self._sync_storm()
-        elif msg.kind == "storm_done":
-            self._sync_storm()
+            self.tree.delete(*self.tree.get_children("grp:storm"))
+            self._group_state("grp:storm", f"⚠ {msg.payload}")
+            self._sync_buttons()
+        elif msg.kind in ("storm_done", "train_done"):
+            self._sync_buttons()
             self._status(*msg.payload)
         elif msg.kind == "train_list":
             self._trains_listed(msg.payload)
         elif msg.kind == "train_unavailable":
             self._train_rows = []
-            self.trains_tree.delete(*self.trains_tree.get_children())
-            self.trains_state_var.set(f"⚠ {msg.payload}")
-            self._sync_trains()
-        elif msg.kind == "train_done":
-            self._sync_trains()
-            self._status(*msg.payload)
+            self.tree.delete(*self.tree.get_children("grp:trains"))
+            self._group_state("grp:trains", f"⚠ {msg.payload}")
+            self._sync_buttons()
 
     def _guard(self, exact: int, decoded: int) -> None:
         pct = 100.0 * exact / decoded if decoded else 0.0
@@ -1075,13 +1008,13 @@ class App:
             value=pct,
             style=("Ok" if pct >= 99 else "Warn") + ".Horizontal.TProgressbar")
         if not decoded:
-            self.guard_var.set("no capture yet")
+            self.guard_var.set(t("no capture yet"))
             return
         self.guard_var.set(
-            f"safeguard: {exact}/{decoded} decoded down to the last byte "
-            f"({pct:.0f} %)"
+            t("safeguard: {exact}/{decoded} decoded down to the last byte "
+              "({pct} %)").format(exact=exact, decoded=decoded, pct=f"{pct:.0f}")
             + ("" if pct >= 99
-               else "  ⚠ below 100 %, you are not decoding what you think"))
+               else "  ⚠ " + t("below 100 %, you are not decoding what you think")))
 
     def _finish(self, result) -> None:
         self.start_btn.configure(state="normal")
@@ -1092,8 +1025,9 @@ class App:
         st, c = result.stats, result.counters
         self._guard(st.exact, st.decoded)
         self._status(
-            f"done — {st.payloads} payloads, {st.decoded} decoded, "
-            f"{st.failed} failed", "err" if result.dropped else "ok")
+            t("done — {p} payloads, {d} decoded, {f} failed").format(
+                p=st.payloads, d=st.decoded, f=st.failed),
+            "err" if result.dropped else "ok")
         self._say(f"capture finished: snapshot #{result.snapshot_id}", "ok")
         if st.failures_by_tag:
             detail = "  ".join(f"0x{t:02x}×{n}" for t, n in st.failures_by_tag.most_common())
@@ -1102,11 +1036,13 @@ class App:
             self._say(f"  {n:4d}  {name}")
         self._seen = dict(c.commands)
         if result.dropped:
-            self._say("no usable message: empty snapshot dropped. "
-                      "Was the VS screen actually reloaded?", "err")
+            self._say(t("no usable message: empty snapshot dropped. "
+                        "Was the VS screen actually reloaded?"), "err")
         self._refresh_feeds()
-        if self.autosend_var.get() and self.url_var.get().strip():
-            self._publish_all()
+        url = self.url_var.get().strip()
+        if self.autosend_var.get() and url:
+            self._remember_send()
+            self._publish_rankings(url, self.token_var.get().strip() or None)
 
     # -- tableau des flux -------------------------------------------------
     def _update_seen(self, commands: dict[str, int]) -> None:
@@ -1114,13 +1050,12 @@ class App:
             n = commands.get(feed.command, 0)
             if not n:
                 continue
-            for item in self.tree.get_children():
+            for item in self.tree.get_children("grp:capture"):
                 if item == f"feed:{feed.key}" or item.startswith(f"feed:{feed.key}:"):
                     self.tree.set(item, "vu", str(n))
 
     def _refresh_feeds(self) -> None:
-        for item in self.tree.get_children():
-            self.tree.delete(item)
+        self.tree.delete(*self.tree.get_children("grp:capture"))
         self._rows: dict[str, dict[str, Any]] = {}
 
         snapshot = self.snapshot_id or self._latest_snapshot()
@@ -1130,16 +1065,16 @@ class App:
                 try:
                     own = exporter.resolve_own_alliance(store, snapshot)
                     self.alliance_var.set(
-                        f"{own.label}  ·  from the "
-                        f"{_SOURCE_LABELS.get(own.source, own.source)}")
+                        f"{own.label}  ·  "
+                        + t(_SOURCE_LABELS.get(own.source, own.source)))
                 except ValueError:
                     self.alliance_var.set(
-                        "⚠ not identified — open the Duel screen or the "
-                        "member list once, it will be remembered")
+                        "⚠ " + t("not identified — open the Duel screen or the "
+                                 "member list once, it will be remembered"))
             elif not self.mine_var.get():
-                self.alliance_var.set("every alliance (see Settings)")
+                self.alliance_var.set(t("every alliance (see Settings)"))
             else:
-                self.alliance_var.set("known after the first capture")
+                self.alliance_var.set(t("known after the first capture"))
             for feed in exporter.FEEDS:
                 alliance = (exporter.MINE
                             if self.mine_var.get() and not feed.inherently_mine
@@ -1149,9 +1084,10 @@ class App:
                     days = self._days(store, snapshot) or [None]
                 for day in days:
                     key = f"feed:{feed.key}" + (f":{day}" if day is not None else "")
-                    label = feed.label + (f" — day {day}" if day is not None else "")
+                    label = t(feed.label) + (f" — {t('day')} {day}"
+                                             if day is not None else "")
                     seen = self._seen.get(feed.command, 0)
-                    count, state, tag = 0, "not seen yet", "muted"
+                    count, state, tag = 0, t("not seen yet"), "muted"
                     if snapshot is not None:
                         try:
                             rows = exporter.collect(
@@ -1161,7 +1097,7 @@ class App:
                             state, tag = self._etat(count, seen)
                         except ValueError as exc:
                             state, tag = str(exc)[:60], "warn"
-                    self.tree.insert("", "end", iid=key, text=label,
+                    self.tree.insert("grp:capture", "end", iid=key, text=label,
                                      tags=(tag,) if tag else (),
                                      values=(seen or "", state, count or ""))
                     self._rows[key] = {"feed": feed, "day": day, "count": count}
@@ -1181,12 +1117,12 @@ class App:
         tient au constat brut.
         """
         if count:
-            return "✓  ready", ""
+            return "✓  " + t("ready"), ""
         if not self._seen:
-            return "no rows", "muted"
+            return t("no rows"), "muted"
         if not seen:
-            return "message never received — reopen the screen", "muted"
-        return "received, but no rows: please report", "warn"
+            return t("message never received — reopen the screen"), "muted"
+        return t("received, but no rows: please report"), "warn"
 
     def _active_db(self) -> str:
         return self.db_path if self._keep.get() else str(self._temp_db)
@@ -1228,11 +1164,12 @@ class App:
         return snaps[-1].id if snaps else None
 
     def _sync_buttons(self) -> None:
-        n = sum(1 for v in getattr(self, "_rows", {}).values() if v["count"])
+        n = (sum(1 for v in getattr(self, "_rows", {}).values() if v["count"])
+             + len(self._storm_rows) + len(self._train_rows))
         self.exportall_btn.configure(state="normal" if n else "disabled")
         self.send_btn.configure(
             state="normal" if n else "disabled",
-            text=f"Send {n} ranking{'s' * (n > 1)} to the site" if n else "Send to the site")
+            text=t("Send {n} to the site").format(n=n) if n else t("Send to the site"))
 
     # -- export -----------------------------------------------------------
     def _export(self) -> None:
@@ -1243,7 +1180,7 @@ class App:
         feed, day = entry["feed"], entry["day"]
         suffix = f"_j{day}" if day is not None else ""
         path = filedialog.asksaveasfilename(
-            title=f"Export — {feed.label}",
+            title=f"Export — {t(feed.label)}",
             defaultextension=".json",
             initialfile=f"lwvs_{feed.key}{suffix}.json",
             filetypes=[("JSON", "*.json")],
@@ -1253,11 +1190,20 @@ class App:
         self._write(feed, day, path)
 
     def _export_all(self) -> None:
-        if not any(v["count"] for v in getattr(self, "_rows", {}).values()):
+        """Un seul dossier pour tout ce qui est pret : classements et mails."""
+        if str(self.exportall_btn.cget("state")) != "normal":
             return
-        folder = filedialog.askdirectory(title="Destination folder")
+        folder = filedialog.askdirectory(
+            title=t("Destination folder"),
+            initialdir=self.prefs.get("storm_out") or None)
         if not folder:
             return
+        self.prefs["storm_out"] = self.prefs["trains_out"] = folder
+        _save_prefs(self.db_path, self.prefs)
+        if self._storm_rows:
+            self._storm_run(folder, None, None)
+        if self._train_rows:
+            self._trains_run(folder, None, None)
         for entry in self._rows.values():
             if not entry["count"]:
                 continue
@@ -1276,14 +1222,14 @@ class App:
         from tkinter import simpledialog
 
         libelle = simpledialog.askstring(
-            TITLE, "Name of the new event (e.g. S4 - Another event):",
+            TITLE, t("Name of the new event (e.g. S4 - Another event):"),
             parent=self.root)
         if not libelle or not libelle.strip():
             return
         cree = events_mod.add(libelle.strip())
         self._reload_events()
         self.event_var.set(cree.label)
-        self._say(f"event added: {cree.id}  ({cree.label})")
+        self._say(t("event added: {id}  ({label})").format(id=cree.id, label=cree.label))
 
     def _declared(self) -> tuple[int | None, str | None]:
         """Lu sur le thread UI : ce sont des variables Tk."""
@@ -1295,13 +1241,41 @@ class App:
         return (exporter.MINE
                 if self.mine_var.get() and not feed.inherently_mine else None)
 
-    def _publish_all(self) -> None:
+    def _site_url(self) -> str:
+        """L'URL du site, ou "" apres avoir envoye le joueur la saisir."""
         url = self.url_var.get().strip()
         if not url:
             self._show_page("settings")
-            messagebox.showinfo(TITLE, "Enter the site URL in Settings.")
+            messagebox.showinfo(TITLE, t("Enter the site URL in Settings."))
+        return url
+
+    def _send_all(self) -> None:
+        """Un seul bouton : classements captures, Storm et trains."""
+        if str(self.send_btn.cget("state")) != "normal":
             return
+        url = self._site_url()
+        if not url:
+            return
+        self._remember_send()
         token = self.token_var.get().strip() or None
+        started = self._publish_rankings(url, token)
+        # Les fichiers des mails sont ecrits AVANT l'envoi : un site
+        # injoignable ne fait rien perdre.
+        if self._storm_rows:
+            self._storm_run(self.prefs.get("storm_out")
+                            or str(identity.home() / "exports"), url, token)
+            started = True
+        if self._train_rows:
+            self._trains_run(self.prefs.get("trains_out")
+                             or str(identity.home() / "exports"), url, token)
+            started = True
+        if not started:
+            messagebox.showinfo(TITLE, t("Nothing to send: no usable capture."))
+            return
+        self.send_btn.configure(state="disabled")
+
+    def _publish_rankings(self, url: str, token: str | None) -> bool:
+        """Envoie les classements prets. Faux s'il n'y avait rien a envoyer."""
         # On lit l'etat de l'UI ICI, sur le thread UI, et on ne passe au worker
         # que des donnees simples.
         # Tout ce que le worker utilisera est lu ICI, sur le thread UI, y
@@ -1310,15 +1284,13 @@ class App:
         jobs = [(v["feed"], v["day"], self._alliance_for(v["feed"]))
                 for v in self._rows.values() if v["count"]]
         if not jobs:
-            messagebox.showinfo(TITLE, "Nothing to send: no usable capture.")
-            return
+            return False
         snapshot = self.snapshot_id or self._latest_snapshot()
         db = self._active_db()
         declared = self._declared()
-        self._remember_send()
         self.send_btn.configure(state="disabled")
-        self._status("sending…", "busy")
-        self._say(f"sending {len(jobs)} ranking(s) to {url}…")
+        self._status(t("sending…"), "busy")
+        self._say(t("sending {n} ranking(s) to {url}…").format(n=len(jobs), url=url))
 
         def work():
             ok = False
@@ -1340,6 +1312,7 @@ class App:
                 # Meme en cas d'echec : sans "sent", Send resterait grise.
                 self.q.put(Msg("sent", ok))
         self._spawn(work)
+        return True
 
     def _payload(self, store: Store, feed: exporter.Feed, day: int | None,
                  snapshot: int | None, alliance: str | None,
@@ -1382,238 +1355,127 @@ class App:
                 )
             self._say(f"written: {written[0]}", "ok")
         except ValueError as exc:
-            self._say(f"[error] export refused: {exc}")
+            self._say(f"[error] {t('export refused')}: {exc}")
             messagebox.showerror(TITLE, str(exc))
 
 
-    # -- Storm (mails du jeu) ----------------------------------------------
+    # -- mails du jeu : Storm et trains -----------------------------------
     # Meme discipline que la capture : les variables Tk sont lues ICI, sur le
-    # thread UI, et le worker ne recoit que des valeurs simples.
+    # thread UI, et le worker ne recoit que des valeurs simples. Seuls les
+    # resumes sans pseudo (`summary_of`) quittent le worker.
 
-    def _refresh_storm(self) -> None:
-        text = self.storm_since_var.get()
+    def _refresh_mail(self) -> None:
+        text = self.since_var.get()
         try:
             since = storm.since_ms(text)
         except ValueError as exc:
-            self.storm_state_var.set(f"⚠ {exc}")
+            for group in ("grp:storm", "grp:trains"):
+                self._group_state(group, f"⚠ {exc}")
             return
-        self.prefs["storm_since"] = text.strip()
+        self.prefs["mail_since"] = text.strip()
         _save_prefs(self.db_path, self.prefs)
         db = self.storm_db
-        self.storm_state_var.set("reading the game's mailbox…")
+        for group in ("grp:storm", "grp:trains"):
+            self._group_state(group, t("reading the game's mailbox…"))
 
         def work():
             try:
                 path = db or gamecache.default_db_path()
                 if path is None:
                     raise gamecache.CacheUnavailable(
-                        "game database not found under AppData\\LocalLow — has "
-                        "the game been run on this PC, with this Windows account?")
+                        t("game database not found under AppData\\LocalLow — has "
+                          "the game been run on this PC, with this Windows account?"))
                 reports, n, dups, bad = storm.load_reports(path, since_ms=since)
+                runs, tn, tbad = trains.load_trains(path, since_ms=since)
             except gamecache.CacheUnavailable as exc:
                 # Un prerequis, pas une panne : une phrase, pas une trace de pile.
                 self.q.put(Msg("storm_unavailable", str(exc)))
+                self.q.put(Msg("train_unavailable", str(exc)))
                 return
-            # Seulement le resume affichable : aucun pseudo ne quitte le worker.
             self.q.put(Msg("storm_list",
                            ([storm.summary_of(r) for r in reports], n, dups, bad)))
+            self.q.put(Msg("train_list",
+                           ([trains.summary_of(r) for r in runs], tn, tbad)))
         self._spawn(work)
 
     def _storm_listed(self, payload) -> None:
         rows, n, dups, bad = payload
         self._storm_rows = rows
-        tree = self.storm_tree
-        tree.delete(*tree.get_children())
+        self.tree.delete(*self.tree.get_children("grp:storm"))
         for i, r in enumerate(reversed(rows)):          # le plus recent en haut
             kind = "Canyon" if r["kind"] == "canyon_storm" else "Desert"
-            team = (r["team"] or "?") + ("  (declared)" if r["declared"] else "")
-            tree.insert("", "end", iid=f"storm:{i}", text=f"{kind}  ·  {r['date']}",
-                        tags=("loss",) if r["result"] == "loss" else (),
-                        values=(team, r["players"],
-                                f"{r['side']}  vs  {r['opponents']}", r["result"]))
-        state = f"{len(rows)} battle(s) in the period"
+            team = (t("team") + " " + (r["team"] or "?")
+                    + (f" ({t('declared')})" if r["declared"] else ""))
+            result = {"win": t("win"), "loss": t("loss")}.get(r["result"], r["result"])
+            self.tree.insert("grp:storm", "end", iid=f"storm:{i}",
+                             text=f"{kind}  ·  {r['date']}",
+                             tags=("muted",) if r["result"] == "loss" else (),
+                             values=("", f"{team}  ·  {r['side']}  vs  "
+                                         f"{r['opponents']}  ·  {result}",
+                                     r["players"]))
+        state = t("{n} battle(s) in the period").format(n=len(rows))
         if dups:
-            state += f"  ·  {dups} duplicate mail(s) merged"
+            state += "  ·  " + t("{n} duplicate mail(s) merged").format(n=dups)
         if bad:
-            state += f"  ·  {bad} unreadable"
+            state += "  ·  " + t("{n} unreadable").format(n=bad)
         if any(r["declared"] for r in rows):
-            state += ("  ·  Desert team is declared, not in the mail: "
-                      "evening = A, early afternoon = B")
+            state += "  ·  " + t("Desert team is declared, not in the mail: "
+                                 "evening = A, early afternoon = B")
         if not rows:
-            state = ("no Storm battle in the period — widen « Since » "
-                     "(a date, or all)")
-        self.storm_state_var.set(state)
-        self._sync_storm()
-
-    def _sync_storm(self) -> None:
-        state = "normal" if self._storm_rows else "disabled"
-        self.storm_export_btn.configure(state=state)
-        self.storm_send_btn.configure(state=state)
-
-    def _storm_export(self) -> None:
-        if not self._storm_rows:
-            return
-        folder = filedialog.askdirectory(
-            title="Destination folder", initialdir=self.prefs.get("storm_out") or None)
-        if not folder:
-            return
-        self.prefs["storm_out"] = folder
-        _save_prefs(self.db_path, self.prefs)
-        self._storm_run(folder, None, None)
-
-    def _storm_send(self) -> None:
-        url = self.url_var.get().strip()
-        if not url:
-            self._show_page("settings")
-            messagebox.showinfo(TITLE, "Enter the site URL in Settings.")
-            return
-        self._remember_send()
-        # Les fichiers sont ecrits AVANT l'envoi, comme partout : un site
-        # injoignable ne fait rien perdre.
-        folder = self.prefs.get("storm_out") or str(identity.home() / "exports")
-        self._storm_run(folder, url, self.token_var.get().strip() or None)
-
-    def _storm_run(self, folder: str, url: str | None, token: str | None) -> None:
-        try:
-            since = storm.since_ms(self.storm_since_var.get())
-        except ValueError as exc:
-            self.storm_state_var.set(f"⚠ {exc}")
-            return
-        only_mine = self.mine_var.get()
-        db = self.storm_db
-        self.storm_export_btn.configure(state="disabled")
-        self.storm_send_btn.configure(state="disabled")
-        self._status("storm: sending…" if url else "storm: writing…", "busy")
-
-        def work():
-            try:
-                res = storm.export_storm(folder, db_path=db, since_ms=since,
-                                         only_mine=only_mine, post_url=url, token=token)
-            except (gamecache.CacheUnavailable, ValueError, OSError) as exc:
-                self.q.put(Msg("log", f"[error] storm: {exc}"))
-                self.q.put(Msg("storm_done", ("storm: nothing written", "err")))
-                return
-            failed = 0
-            for w in res.written:
-                self.q.put(Msg("log", f"written: {w.path}  ({w.records} records)"))
-                if w.published is not None:
-                    pub = w.published
-                    failed += not pub.ok
-                    tag = "OK" if pub.ok else "FAILED"
-                    self.q.put(Msg("log", f"  {w.path.stem}: {tag} HTTP {pub.status}"
-                                          f"  {pub.response.strip()[:180] or pub.error}"))
-            for label, why in res.skipped:
-                self.q.put(Msg("log", f"  {label}: skipped — {why}"))
-            done = f"storm: {len(res.written)} battle(s) written"
-            if url:
-                done += f", {len(res.written) - failed} sent"
-            self.q.put(Msg("storm_done", (done, "err" if failed else "ok")))
-        self._spawn(work)
-
-
-    # -- Trains d'alliance (mails du jeu) ----------------------------------
-    # Calque de Storm : variables Tk lues sur le thread UI, et seul le resume
-    # sans pseudo (`trains.summary_of`) quitte le worker.
-
-    def _refresh_trains(self) -> None:
-        text = self.trains_since_var.get()
-        try:
-            since = trains.since_ms(text)
-        except ValueError as exc:
-            self.trains_state_var.set(f"⚠ {exc}")
-            return
-        self.prefs["trains_since"] = text.strip()
-        _save_prefs(self.db_path, self.prefs)
-        db = self.storm_db
-        self.trains_state_var.set("reading the game's mailbox…")
-
-        def work():
-            try:
-                path = db or gamecache.default_db_path()
-                if path is None:
-                    raise gamecache.CacheUnavailable(
-                        "game database not found under AppData\\LocalLow — has "
-                        "the game been run on this PC, with this Windows account?")
-                runs, n, bad = trains.load_trains(path, since_ms=since)
-            except gamecache.CacheUnavailable as exc:
-                self.q.put(Msg("train_unavailable", str(exc)))
-                return
-            self.q.put(Msg("train_list",
-                           ([trains.summary_of(r) for r in runs], n, bad)))
-        self._spawn(work)
+            state = t("none in the period — widen « Mail since »")
+        self._group_state("grp:storm", state)
+        self._sync_buttons()
 
     def _trains_listed(self, payload) -> None:
         rows, n, bad = payload
         self._train_rows = rows
-        tree = self.trains_tree
-        tree.delete(*tree.get_children())
+        self.tree.delete(*self.tree.get_children("grp:trains"))
         for i, r in enumerate(reversed(rows)):          # le plus recent en haut
             label = f"{r['date']}  ·  {r['departed']} UTC"
             if r["purchased"]:
-                label += "  ·  purchased"
-            trip = (f"{r['attacks']} attack(s), {r['robbed']} robbed"
-                    if r["arrived"] else "en route")
-            tree.insert("", "end", iid=f"train:{i}", text=label,
-                        tags=() if r["arrived"] else ("enroute",),
-                        values=(r["escort"], r["passengers"], trip))
-        state = f"{len(rows)} train(s) in the period"
+                label += "  ·  " + t("purchased")
+            trip = (t("{a} attack(s), {r} robbed").format(a=r["attacks"], r=r["robbed"])
+                    if r["arrived"] else t("en route"))
+            self.tree.insert("grp:trains", "end", iid=f"train:{i}", text=label,
+                             tags=() if r["arrived"] else ("muted",),
+                             values=("", f"{r['escort']}  ·  {trip}", r["passengers"]))
+        state = t("{n} train(s) in the period").format(n=len(rows))
         bought = sum(1 for r in rows if r["purchased"])
         if bought:
-            state += f"  ·  {bought} purchased"
+            state += "  ·  " + t("{n} purchased").format(n=bought)
         if bad:
-            state += f"  ·  {bad} unreadable"
+            state += "  ·  " + t("{n} unreadable").format(n=bad)
         if not rows:
-            state = "no train in the period — widen « Since » (a date, or all)"
-        self.trains_state_var.set(state)
-        self._sync_trains()
+            state = t("none in the period — widen « Mail since »")
+        self._group_state("grp:trains", state)
+        self._sync_buttons()
 
-    def _sync_trains(self) -> None:
-        state = "normal" if self._train_rows else "disabled"
-        self.trains_export_btn.configure(state=state)
-        self.trains_send_btn.configure(state=state)
-
-    def _trains_export(self) -> None:
-        if not self._train_rows:
-            return
-        folder = filedialog.askdirectory(
-            title="Destination folder",
-            initialdir=self.prefs.get("trains_out") or self.prefs.get("storm_out") or None)
-        if not folder:
-            return
-        self.prefs["trains_out"] = folder
-        _save_prefs(self.db_path, self.prefs)
-        self._trains_run(folder, None, None)
-
-    def _trains_send(self) -> None:
-        url = self.url_var.get().strip()
-        if not url:
-            self._show_page("settings")
-            messagebox.showinfo(TITLE, "Enter the site URL in Settings.")
-            return
-        self._remember_send()
-        folder = self.prefs.get("trains_out") or str(identity.home() / "exports")
-        self._trains_run(folder, url, self.token_var.get().strip() or None)
+    def _storm_run(self, folder: str, url: str | None, token: str | None) -> None:
+        self._mail_run("storm", storm.export_storm, folder, url, token)
 
     def _trains_run(self, folder: str, url: str | None, token: str | None) -> None:
+        self._mail_run("trains", trains.export_trains, folder, url, token)
+
+    def _mail_run(self, name: str, export, folder: str, url: str | None,
+                  token: str | None) -> None:
+        """Ecrit un JSON par bataille / train, puis l'envoie si `url` est donne."""
         try:
-            since = trains.since_ms(self.trains_since_var.get())
+            since = storm.since_ms(self.since_var.get())
         except ValueError as exc:
-            self.trains_state_var.set(f"⚠ {exc}")
+            self._say(f"[error] {name}: {exc}")
             return
         only_mine = self.mine_var.get()
         db = self.storm_db
-        self.trains_export_btn.configure(state="disabled")
-        self.trains_send_btn.configure(state="disabled")
-        self._status("trains: sending…" if url else "trains: writing…", "busy")
+        done_kind = "storm_done" if name == "storm" else "train_done"
+        self._status(f"{name}: " + (t("sending…") if url else t("writing…")), "busy")
 
         def work():
             try:
-                res = trains.export_trains(folder, db_path=db, since_ms=since,
-                                           only_mine=only_mine, post_url=url,
-                                           token=token)
+                res = export(folder, db_path=db, since_ms=since,
+                             only_mine=only_mine, post_url=url, token=token)
             except (gamecache.CacheUnavailable, ValueError, OSError) as exc:
-                self.q.put(Msg("log", f"[error] trains: {exc}"))
-                self.q.put(Msg("train_done", ("trains: nothing written", "err")))
+                self.q.put(Msg("log", f"[error] {name}: {exc}"))
+                self.q.put(Msg(done_kind, (f"{name}: " + t("nothing written"), "err")))
                 return
             failed = 0
             for w in res.written:
@@ -1626,10 +1488,10 @@ class App:
                                           f"  {pub.response.strip()[:180] or pub.error}"))
             for label, why in res.skipped:
                 self.q.put(Msg("log", f"  {label}: skipped — {why}"))
-            done = f"trains: {len(res.written)} train(s) written"
+            done = f"{name}: " + t("{n} file(s) written").format(n=len(res.written))
             if url:
-                done += f", {len(res.written) - failed} sent"
-            self.q.put(Msg("train_done", (done, "err" if failed else "ok")))
+                done += ", " + t("{n} sent").format(n=len(res.written) - failed)
+            self.q.put(Msg(done_kind, (done, "err" if failed else "ok")))
         self._spawn(work)
 
 
