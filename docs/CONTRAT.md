@@ -637,6 +637,10 @@ lwvs storm --post https://mon-site/api/rankings
 ```
 
 - `POST` par document (pas de lot), `Content-Type: application/json; charset=utf-8`
+- L'adresse vient de `--post` ou de `LWVS_URL` ; le service est propre à chaque
+  alliance (`https://<alliance>.kwet.eu/api/rankings`, un jeton par alliance).
+  `lwvs check` poste un corps **vide** pour tester adresse et jeton : 401 jeton
+  faux, 503 envoi non activé, 422 jeton accepté. Le format des documents ne change pas.
 - `Authorization: Bearer <token>` si `LWVS_TOKEN` ou `--token`. Préférer la
   variable : tapé en argument, le jeton reste en clair dans l'historique du shell.
 - `Idempotency-Key: <sha256 du corps>`

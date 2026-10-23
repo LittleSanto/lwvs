@@ -105,6 +105,12 @@ _FR = {
         "puis relancez lwvs.",
     # reglages
     "Stats site": "Site de stats",
+    "URL and token: your alliance's R4 Tools → Push feed page on the site.":
+        "URL et jeton : page R4 Tools → Push feed de votre alliance sur le site.",
+    "Test the connection": "Tester la connexion",
+    "Checks the URL and the token. Sends no ranking.":
+        "Vérifie l'URL et le jeton. N'envoie aucun classement.",
+    "testing…": "test en cours…",
     "Send automatically when a capture stops":
         "Envoyer automatiquement à la fin d'une capture",
     "Remember the token (plain text on this PC)":
@@ -308,6 +314,12 @@ _DE = {
         "tshark nicht gefunden: Installiere Wireshark (siehe oben im Fenster) und "
         "starte lwvs neu.",
     "Stats site": "Statistik-Website",
+    "URL and token: your alliance's R4 Tools → Push feed page on the site.":
+        "URL und Token: Seite R4 Tools → Push feed deiner Allianz auf der Website.",
+    "Test the connection": "Verbindung testen",
+    "Checks the URL and the token. Sends no ranking.":
+        "Prüft URL und Token. Sendet keine Rangliste.",
+    "testing…": "wird getestet…",
     "Send automatically when a capture stops":
         "Nach Ende einer Aufzeichnung automatisch senden",
     "Remember the token (plain text on this PC)":

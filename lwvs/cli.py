@@ -224,6 +224,14 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_check(args: argparse.Namespace) -> int:
+    from .publish import DEFAULT_URL, check_connection
+
+    ok, text = check_connection(args.post or DEFAULT_URL, args.token)
+    print(text)
+    return 0 if ok else 1
+
+
 def cmd_grab(args: argparse.Namespace) -> int:
     from .grab import MEMORY_DB, grab
 
@@ -558,7 +566,7 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--save", metavar="DIR",
                    help="garde aussi les payloads bruts (y compris ceux qui n'ont "
                         "pas decode) pour explorer avec `find` et `inspect`")
-    q.add_argument("--post", metavar="URL",
+    q.add_argument("--post", metavar="URL", default=os.environ.get("LWVS_URL"),
                    help="envoie aussi chaque classement a ce service "
                         "(voir docs/CONTRAT.md). Publie des donnees joueur.")
     q.add_argument("--token", default=os.environ.get("LWVS_TOKEN"),
@@ -587,7 +595,7 @@ def build_parser() -> argparse.ArgumentParser:
                         " alliance n'apparait pas")
     q.add_argument("--list", action="store_true",
                    help="liste les batailles du cache sans rien ecrire (aucun pseudo)")
-    q.add_argument("--post", metavar="URL",
+    q.add_argument("--post", metavar="URL", default=os.environ.get("LWVS_URL"),
                    help="envoie aussi chaque document a ce service. Publie des"
                         " donnees joueur.")
     q.add_argument("--token", default=os.environ.get("LWVS_TOKEN"),
@@ -614,13 +622,22 @@ def build_parser() -> argparse.ArgumentParser:
                    help="aussi les trains d'une autre alliance (ancien chapitre)")
     q.add_argument("--list", action="store_true",
                    help="liste les trains du cache sans rien ecrire (aucun pseudo)")
-    q.add_argument("--post", metavar="URL",
+    q.add_argument("--post", metavar="URL", default=os.environ.get("LWVS_URL"),
                    help="envoie aussi chaque document a ce service. Publie des"
                         " donnees joueur.")
     q.add_argument("--token", default=os.environ.get("LWVS_TOKEN"),
                    help="jeton Bearer pour --post. Prefere LWVS_TOKEN : tape ici,"
                         " il reste en clair dans l'historique du shell")
     q.set_defaults(func=cmd_trains)
+
+    q = sub.add_parser(
+        "check",
+        help="teste l'adresse et le jeton d'envoi, sans rien publier")
+    q.add_argument("--post", metavar="URL", default=os.environ.get("LWVS_URL"),
+                   help="adresse du site (defaut : LWVS_URL, sinon GolD)")
+    q.add_argument("--token", default=os.environ.get("LWVS_TOKEN"),
+                   help="jeton Bearer. Prefere LWVS_TOKEN")
+    q.set_defaults(func=cmd_check)
 
     q = sub.add_parser("inspect", help="cartographie le protocole (commandes, formes)")
     _add_source_args(q)

@@ -1,6 +1,14 @@
 lwvs - ranking capture for Last War: Survival
 =============================================
 
+What you need
+-------------
+  - A Windows PC where you play Last War (the PC game client).
+  - Wireshark with Npcap (next section). Free, one install, no coding.
+  - Your alliance's site address and push token. An R4 gets them on the site:
+    open the alliance site, "R4 Tools", then "Push feed", and generate a token.
+    The address looks like https://<your-alliance>.kwet.eu/api/rankings
+
 FIRST: install Wireshark
 ------------------------
 lwvs does not sniff the network itself: it delegates to tshark, which ships
@@ -17,7 +25,8 @@ and says so at the top of its window.
 
 Run lwvs
 --------
-Double-click lwvs.exe (in this folder).
+Unzip the whole folder somewhere you can write (Documents, not Program Files),
+then double-click lwvs.exe.
 
 Windows may show "Windows protected your PC". That is SmartScreen: the
 program is not signed by a known publisher, not a danger diagnosis.
@@ -26,6 +35,22 @@ Click "More info", then "Run anyway".
 If your antivirus quarantines lwvs.exe, it is a false positive of the same
 kind (an unsigned program that listens on the network). You have to allow
 it explicitly.
+
+Connect lwvs to your alliance's site (once)
+-------------------------------------------
+  1. Open "Settings", card "Stats site".
+  2. URL: paste your alliance's address. The field starts with another alliance's
+     address (GolD): replace it. "your-alliance.kwet.eu" alone is enough.
+  3. Token: paste the token generated in R4 Tools -> Push feed.
+  4. Press "Test the connection". Expected: "Connected ... Nothing was sent."
+       Token refused (401)   -> wrong or regenerated token: copy it again.
+       No push token yet (503) -> an R4 must generate one on the site first.
+       Nothing at this address (404) -> check the address.
+       Cannot reach ...      -> no internet, or a typo in the address.
+  5. Tick "Remember the token" if you do not want to paste it every time. It is
+     then saved in plain text on this PC: do not tick it on a shared PC.
+A token is a password for your alliance's data: do not post it in a chat.
+Regenerating it on the site cuts off the old one.
 
 Usage
 -----
@@ -38,8 +63,8 @@ Usage
      A screen that is already open must be RELOADED (close, then reopen).
   4. "Stop", then "Save JSON..." or "Send N to the site". Both buttons
      cover everything ready on the screen: rankings, Storm and trains.
-     The site URL and token are entered once, in "Settings", along with
-     the language (English, Français, Deutsch).
+     The site URL and token are entered once, in "Settings" (see above),
+     along with the language (English, Français, Deutsch).
 
 The "Decoded fully" tile must stay at ~100%. Below that, decoding
 misses part of what goes by: report it.
@@ -72,7 +97,8 @@ What lwvs writes on your disk
 -----------------------------
 Nothing in this folder. Everything goes to:
   %LOCALAPPDATA%\lwvs\
-  - lwvs.gui.json   your settings (interface, port, site URL, language)
+  - lwvs.gui.json   your settings (interface, port, site URL, language,
+                    and the token only if you ticked "Remember the token")
   - identity.json   your alliance, remembered
   - lwvs.sqlite3    ONLY if you tick "Keep history locally"
 
