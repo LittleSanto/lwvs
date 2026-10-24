@@ -64,6 +64,23 @@ _SOURCE_LABELS = {"duel": "Duel screen", "roster": "member list",
 #: de la boite mail du jeu.
 _GROUPS = ("grp:capture", "grp:storm", "grp:trains")
 
+#: Icone et libelle court de chaque flux a l'ecran. Le libelle long
+#: d'`exporter.FEEDS` reste celui de la CLI ; un flux absent d'ici garde le sien.
+#: Symboles du plan de base Unicode : Tk les rend avec Segoe UI Symbol.
+_FEED_LOOK = {
+    "kills": ("☠", "Kills"),
+    "dons_semaine": ("⛃", "Donations · week"),
+    "roles": ("♛", "Roles R1–R5"),
+    "thp": ("⚡", "THP · server"),
+    "camp_battle": ("⚑", "Camp battle"),
+    "canyon_a": ("⛰", "Canyon · team A"),
+    "canyon_b": ("⛰", "Canyon · team B"),
+    "desert_a": ("☀", "Desert · team A"),
+    "desert_b": ("☀", "Desert · team B"),
+    "vs_total": ("⚔", "VS · total"),
+    "vs_day": ("⚔", "VS · day"),
+}
+
 
 # Le defaut de `store` est RELATIF : lance depuis un raccourci (ou un .exe
 # installe), il suit un repertoire courant imprevisible -- la base atterrit
@@ -500,16 +517,18 @@ class App:
         self.tree.column("vu", width=80, anchor="center", stretch=False)
         self.tree.column("etat", width=300, anchor="w")
         self.tree.column("lignes", width=60, anchor="e", stretch=False)
-        # Une ligne prete garde la couleur du texte : peindre en vert les 4/5
-        # des lignes ne signale plus rien. Seul l'anormal prend une couleur.
-        for tag, colour in (("warn", pal.warn), ("muted", pal.muted)):
+        # Trois etats d'une ligne, trois couleurs : prete (vert), en attente
+        # (gris), a signaler (ambre). Le symbole en tete dit la meme chose.
+        for tag, colour in (("ok", pal.ok), ("warn", pal.warn), ("muted", pal.muted)):
             self.tree.tag_configure(tag, foreground=colour)
-        self.tree.tag_configure("group", font=fonts.bold)
-        for iid, text in zip(_GROUPS, (t("Rankings — capture"),
-                                       t("Desert / Canyon Storm — mailbox"),
-                                       t("Alliance trains — mailbox"))):
-            self.tree.insert("", "end", iid=iid, text=text, open=True,
-                             tags=("group",))
+        # Chaque famille est un bandeau colore : on retrouve sa section d'un coup d'oeil.
+        for iid, text, bg, fg in zip(
+                _GROUPS,
+                ("◉  " + t("Capture"), "⛈  " + t("Storms"), "🚂  " + t("Trains")),
+                (pal.accent_soft, pal.warn_soft, pal.ok_soft),
+                (pal.accent, pal.warn, pal.ok)):
+            self.tree.tag_configure(iid, background=bg, foreground=fg, font=fonts.bold)
+            self.tree.insert("", "end", iid=iid, text=text, open=True, tags=(iid,))
         scroll = ttk.Scrollbar(self.tree_holder, style="Slim.Vertical.TScrollbar",
                                command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll.set)
@@ -1100,12 +1119,12 @@ class App:
                 days = [None]
                 if feed.per_day and snapshot is not None:
                     days = self._days(store, snapshot) or [None]
+                icon, short = _FEED_LOOK.get(feed.key, ("•", feed.label))
                 for day in days:
                     key = f"feed:{feed.key}" + (f":{day}" if day is not None else "")
-                    label = t(feed.label) + (f" — {t('day')} {day}"
-                                             if day is not None else "")
+                    label = f"{icon}  {t(short)}" + (f" {day}" if day is not None else "")
                     seen = self._seen.get(feed.command, 0)
-                    count, state, tag = 0, t("not seen yet"), "muted"
+                    count, state, tag = 0, "◷  " + t("not seen yet"), "muted"
                     if snapshot is not None:
                         try:
                             rows = exporter.collect(
@@ -1119,6 +1138,9 @@ class App:
                                      tags=(tag,) if tag else (),
                                      values=(seen or "", state, count or ""))
                     self._rows[key] = {"feed": feed, "day": day, "count": count}
+        ready = sum(1 for r in self._rows.values() if r["count"])
+        self._group_state("grp:capture", t("{r} / {n} ready").format(
+            r=ready, n=len(self._rows)))
         self._sync_buttons()
 
     def _etat(self, count: int, seen: int) -> tuple[str, str]:
@@ -1135,12 +1157,12 @@ class App:
         tient au constat brut.
         """
         if count:
-            return "✓  " + t("ready"), ""
+            return "✓  " + t("ready"), "ok"
         if not self._seen:
-            return t("no rows"), "muted"
+            return "◷  " + t("no rows"), "muted"
         if not seen:
-            return t("message never received — reopen the screen"), "muted"
-        return t("received, but no rows: please report"), "warn"
+            return "◷  " + t("message never received — reopen the screen"), "muted"
+        return "⚠  " + t("received, but no rows: please report"), "warn"
 
     def _active_db(self) -> str:
         return self.db_path if self._keep.get() else str(self._temp_db)
@@ -1431,7 +1453,7 @@ class App:
         self._storm_rows = rows
         self.tree.delete(*self.tree.get_children("grp:storm"))
         for i, r in enumerate(reversed(rows)):          # le plus recent en haut
-            kind = "Canyon" if r["kind"] == "canyon_storm" else "Desert"
+            kind = "⛰  Canyon" if r["kind"] == "canyon_storm" else "☀  Desert"
             team = (t("team") + " " + (r["team"] or "?")
                     + (f" ({t('declared')})" if r["declared"] else ""))
             result = {"win": t("win"), "loss": t("loss")}.get(r["result"], r["result"])
@@ -1459,7 +1481,7 @@ class App:
         self._train_rows = rows
         self.tree.delete(*self.tree.get_children("grp:trains"))
         for i, r in enumerate(reversed(rows)):          # le plus recent en haut
-            label = f"{r['date']}  ·  {r['departed']} UTC"
+            label = f"🚂  {r['date']}  ·  {r['departed']} UTC"
             if r["purchased"]:
                 label += "  ·  " + t("purchased")
             trip = (t("{a} attack(s), {r} robbed").format(a=r["attacks"], r=r["robbed"])

@@ -407,17 +407,6 @@ FEEDS: tuple[Feed, ...] = (
              "aux kills, il n'y a AUCUNE difference a calculer en aval.",
     ),
     Feed(
-        key="dons_jour",
-        label="Donation points — today",
-        dataset="members",
-        command="al.rank",
-        metric="today_progress",
-        mode="donation_daily_rank",
-        inherently_mine=True,
-        hint="`todayProgress` : la part du jour dans le total de la semaine. "
-             "Se vide a la remise a zero quotidienne -- a capturer le jour meme.",
-    ),
-    Feed(
         key="roles",
         label="Alliance roles (R1–R5)",
         dataset="members",
