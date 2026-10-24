@@ -79,6 +79,10 @@ _FEED_LOOK = {
     "desert_b": ("☀", "Desert · team B"),
     "vs_total": ("⚔", "VS · total"),
     "vs_day": ("⚔", "VS · day"),
+    "meteor_alliances_t1": ("☄", "Meteor · alliances · tower 1"),
+    "meteor_alliances_t2": ("☄", "Meteor · alliances · tower 2"),
+    "meteor_players_t1": ("☄", "Meteor · players · tower 1"),
+    "meteor_players_t2": ("☄", "Meteor · players · tower 2"),
 }
 
 

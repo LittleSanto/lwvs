@@ -21,8 +21,8 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .messages import (CampRankMessage, GroupMessage, MembersMessage,
-                       RankMessage, SeasonMessage, ServerRankMessage,
-                       StormSignupMessage)
+                       MeteorRankMessage, MeteorTower, RankMessage,
+                       SeasonMessage, ServerRankMessage, StormSignupMessage)
 
 __all__ = ["Store", "IngestCounters", "SnapshotInfo", "utc_now"]
 
@@ -170,6 +170,26 @@ CREATE TABLE IF NOT EXISTS storm_signup_rows (
 CREATE UNIQUE INDEX IF NOT EXISTS ux_storm_signup_rows
     ON storm_signup_rows (snapshot_id, event, uid);
 
+-- Evenement Meteor : un classement d'alliances et un de joueurs PAR TOUR.
+-- `kind` = "alliance" | "player" ; `key` = `allianceId` ou `uid`. La tour est
+-- dans la cle : la meme alliance, le meme joueur figure sur les deux tours avec
+-- deux scores. Un classement que rien ne rattache a une tour n'est pas stocke.
+CREATE TABLE IF NOT EXISTS meteor_rank_rows (
+    snapshot_id    INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+    kind           TEXT    NOT NULL,
+    tower          INTEGER NOT NULL,   -- 1, 2 : position par cfgId croissant
+    tower_cfg_id   TEXT,
+    rank           INTEGER,
+    key            TEXT    NOT NULL,
+    name           TEXT,
+    alliance_abbr  TEXT,
+    server_id      INTEGER,
+    score          INTEGER,
+    power          INTEGER             -- joueurs seulement
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_meteor_rank_rows
+    ON meteor_rank_rows (snapshot_id, kind, tower, key);
+
 -- Index du protocole : quelles commandes ont ete vues, combien de fois.
 -- Aucun contenu de payload n'est stocke.
 CREATE TABLE IF NOT EXISTS commands_seen (
@@ -224,6 +244,11 @@ class IngestCounters:
     desert_rows: int = 0
     desert_messages: int = 0
     desert_rows: int = 0
+    meteor_messages: int = 0
+    meteor_rows: int = 0
+    #: Classements Meteor que rien ne rattache a une tour : ni stockes, ni
+    #: exportes. Compter, c'est ce qui les rend visibles.
+    meteor_unplaced: int = 0
     commands: dict[str, int] = field(default_factory=dict)
 
     def note_command(self, command: str) -> None:
@@ -302,7 +327,8 @@ class Store:
             "     + (SELECT COUNT(*) FROM member_rows WHERE snapshot_id=:s)"
             "     + (SELECT COUNT(*) FROM camp_rank_rows WHERE snapshot_id=:s)"
             "     + (SELECT COUNT(*) FROM server_rank_rows WHERE snapshot_id=:s)"
-            "     + (SELECT COUNT(*) FROM storm_signup_rows WHERE snapshot_id=:s) AS n",
+            "     + (SELECT COUNT(*) FROM storm_signup_rows WHERE snapshot_id=:s)"
+            "     + (SELECT COUNT(*) FROM meteor_rank_rows WHERE snapshot_id=:s) AS n",
             {"s": snapshot_id},
         ).fetchone()
         if rows and rows["n"] == 0:
@@ -328,6 +354,11 @@ class Store:
                 "SELECT COUNT(*) AS n FROM storm_signup_rows"
                 " WHERE snapshot_id=? AND event=?", (snapshot_id, event)).fetchone()
             out[event] = int(row["n"])
+        for kind in ("alliance", "player"):
+            row = self.conn.execute(
+                "SELECT COUNT(*) AS n FROM meteor_rank_rows"
+                " WHERE snapshot_id=? AND kind=?", (snapshot_id, kind)).fetchone()
+            out[f"meteor_{kind}s"] = int(row["n"])
         return out
 
     def snapshots(self) -> list[SnapshotInfo]:
@@ -529,6 +560,39 @@ class Store:
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY c.snapshot_id, c.team, c.name COLLATE NOCASE, c.uid"
+        return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
+
+    def add_meteor_rank_message(self, snapshot_id: int, msg: MeteorRankMessage,
+                                tower: MeteorTower) -> int:
+        rows = [(snapshot_id, msg.kind, tower.number, tower.cfg_id, r.rank, r.key,
+                 r.name, r.alliance_abbr, r.server_id, r.score, r.power)
+                for r in msg.rows if r.key]
+        self.conn.executemany(
+            "INSERT OR REPLACE INTO meteor_rank_rows"
+            "(snapshot_id, kind, tower, tower_cfg_id, rank, key, name,"
+            " alliance_abbr, server_id, score, power)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
+        return len(rows)
+
+    def fetch_meteor_rank(self, kind: str, tower: int | None = None,
+                          snapshot: int | None = None) -> list[dict[str, Any]]:
+        sql = (
+            "SELECT s.captured_at AS captured_at, m.snapshot_id AS snapshot_id,"
+            " m.tower, m.tower_cfg_id, m.rank, m.key, m.name, m.alliance_abbr,"
+            " m.server_id, m.score, m.power"
+            " FROM meteor_rank_rows m JOIN snapshots s ON s.id = m.snapshot_id"
+            " WHERE m.kind = :kind"
+        )
+        params: dict[str, Any] = {"kind": kind}
+        if snapshot is not None:
+            sql += " AND m.snapshot_id = :snapshot"
+            params["snapshot"] = snapshot
+        if tower is not None:
+            sql += " AND m.tower = :tower"
+            params["tower"] = tower
+        sql += " ORDER BY m.snapshot_id, m.tower, m.rank"
         return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
 
     # -- resolution de TON alliance --------------------------------------

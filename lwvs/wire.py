@@ -28,6 +28,7 @@ __all__ = [
     "KNOWN_FLAGS",
     "FLAG_RAW",
     "FLAG_ZSTD",
+    "FLAG_ZSTD_LONG",
     "Frame",
     "FrameReader",
     "FrameStats",
@@ -85,15 +86,25 @@ __all__ = [
 # Le discriminant compresse/brut n'est PAS le flag mais la magie zstd : le flag
 # n'est connu que pour deux valeurs, la magie est auto-evidente. On sonde donc
 # +7 avant +3.
+#
+#   compresse long  [0xB8][len u32 BE][taille_decomp u32 BE][trame zstd : len]
+#               -> avancer 9 + len
+#
+# ETABLI le 24/10/2026 sur la capture Meteor : les gros messages (classements,
+# 60 a 110 Ko) passent la longueur sur 4 octets, magie zstd a +9. Lue comme une
+# trame brute, `len` = 0x0001 et tout le reste du flux part en bouillie. Vu
+# aussi sous 64 Ko (`b8 00 00 f7 d2`) : c'est le flag qui choisit la forme, pas
+# la taille -- mais le discriminant reste la magie, sondee a +9 apres +7.
 
 ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 
 FLAG_RAW = 0x80
 FLAG_ZSTD = 0xB0
-KNOWN_FLAGS = frozenset({FLAG_RAW, FLAG_ZSTD})
+FLAG_ZSTD_LONG = 0xB8
+KNOWN_FLAGS = frozenset({FLAG_RAW, FLAG_ZSTD, FLAG_ZSTD_LONG})
 
 _HEADER_MIN = 3
-_PROBE_MIN = 11  # 1 (flag) + 2 (len) + 4 (taille decomp) + 4 (magie)
+_PROBE_MIN = 13  # 1 (flag) + 4 (len long) + 4 (taille decomp) + 4 (magie)
 _COMPACT_THRESHOLD = 1 << 16
 
 
@@ -188,7 +199,13 @@ class FrameReader:
         out: list[Frame] = []
         while self._off < len(self._buf):
             try:
-                hdr = self._header(self._off, final=final, strict=False)
+                # Strict : un flag inconnu sur une trame brute n'est pas une
+                # trame. Accepte, son `len` bidon avale la suite et chaque
+                # atterrissage en reaccepte un autre : avant `FLAG_ZSTD_LONG`,
+                # la capture du 24/10/2026 a donne ~120 "trames" de 5 a 60 Ko
+                # aux flags aleatoires au lieu d'une resync. La magie zstd,
+                # elle, suffit sans flag.
+                hdr = self._header(self._off, final=final, strict=True)
             except _NeedMore:
                 break
             if hdr is None:
@@ -220,17 +237,23 @@ class FrameReader:
             raise _NeedMore
         flag = buf[off]
         wire_len = int.from_bytes(buf[off + 1 : off + 3], "big")
-        if wire_len == 0:
-            if not strict:
-                self.stats.zero_length_headers += 1
-            return None
         if avail < _PROBE_MIN and not final:
             # On ne peut pas encore trancher compresse/brut : la magie zstd
-            # tombe a +7. Attendre plutot que deviner.
+            # tombe a +7 ou +9. Attendre plutot que deviner.
             raise _NeedMore
         if buf[off + 7 : off + 11] == ZSTD_MAGIC:
             declared = int.from_bytes(buf[off + 3 : off + 7], "big")
             return _Header(flag, True, wire_len, off + 7, off + 7 + wire_len, declared)
+        if buf[off + 9 : off + 13] == ZSTD_MAGIC:
+            long_len = int.from_bytes(buf[off + 1 : off + 5], "big")
+            declared = int.from_bytes(buf[off + 5 : off + 9], "big")
+            return _Header(flag, True, long_len, off + 9, off + 9 + long_len, declared)
+        # Apres les sondes zstd : une trame longue de moins de 64 Ko commence
+        # par `00 00`, ce qui n'est un `len` nul que pour une trame courte.
+        if wire_len == 0:
+            if not strict:
+                self.stats.zero_length_headers += 1
+            return None
         if strict and flag not in KNOWN_FLAGS:
             return None
         return _Header(flag, False, wire_len, off + 3, off + 3 + wire_len, None)
@@ -855,6 +878,7 @@ def encode_frame(
     compress: bool = False,
     flag: int | None = None,
     prefix: bytes = b"",
+    long: bool | None = None,
 ) -> bytes:
     """Emballe un payload dans une trame telle que `FrameReader` l'attend.
 
@@ -863,7 +887,14 @@ def encode_frame(
     body = prefix + payload
     if compress:
         comp = zstandard.ZstdCompressor().compress(body)
-        head = struct.pack(">BHI", FLAG_ZSTD if flag is None else flag, len(comp), len(body))
+        if long is None:
+            long = len(comp) > 0xFFFF
+        if long:
+            head = struct.pack(">BII", FLAG_ZSTD_LONG if flag is None else flag,
+                               len(comp), len(body))
+        else:
+            head = struct.pack(">BHI", FLAG_ZSTD if flag is None else flag,
+                               len(comp), len(body))
         return head + comp
     if len(body) > 0xFFFF:
         raise ValueError("payload brut > 65535 octets : compresser")
