@@ -81,9 +81,6 @@ _FR = {
     "Messages": "Messages",
     "Status / details": "État / détails",
     "Rows": "Lignes",
-    "Rankings — capture": "Classements — capture",
-    "Desert / Canyon Storm — mailbox": "Desert / Canyon Storm — boîte mail",
-    "Alliance trains — mailbox": "Trains d'alliance — boîte mail",
     # Wireshark
     "Wireshark is required, and it could not be found":
         "Wireshark est requis et n'a pas été trouvé",
@@ -230,7 +227,6 @@ _FR = {
     # libelles des flux (exporter.FEEDS)
     "Kills — alliance roster": "Kills — membres de l'alliance",
     "Donation points — week": "Points de don — semaine",
-    "Donation points — today": "Points de don — aujourd'hui",
     "Alliance roles (R1–R5)": "Rangs d'alliance (R1–R5)",
     "THP — server ranking": "THP — classement serveur",
     "Event ranking (camp battle)": "Classement d'événement (bataille de camps)",
@@ -240,6 +236,20 @@ _FR = {
     "Desert Storm — team B": "Desert Storm — équipe B",
     "VS points — duel total": "Points VS — total du duel",
     "VS points — per day": "Points VS — par jour",
+    # tableau : bandeaux et libelles courts
+    "Capture": "Capture",
+    "Storms": "Tempêtes",
+    "Trains": "Trains",
+    "{r} / {n} ready": "{r} / {n} prêts",
+    "Donations · week": "Dons · semaine",
+    "Roles R1–R5": "Rôles R1–R5",
+    "THP · server": "THP · serveur",
+    "Camp battle": "Bataille de camp",
+    "Canyon · team A": "Canyon · équipe A",
+    "Canyon · team B": "Canyon · équipe B",
+    "Desert · team A": "Desert · équipe A",
+    "Desert · team B": "Desert · équipe B",
+    "VS · day": "VS · jour",
 }
 
 _DE = {
@@ -293,9 +303,6 @@ _DE = {
     "Messages": "Nachrichten",
     "Status / details": "Status / Details",
     "Rows": "Zeilen",
-    "Rankings — capture": "Ranglisten — Aufzeichnung",
-    "Desert / Canyon Storm — mailbox": "Desert / Canyon Storm — Postfach",
-    "Alliance trains — mailbox": "Allianzzüge — Postfach",
     "Wireshark is required, and it could not be found":
         "Wireshark wird benötigt und wurde nicht gefunden",
     "lwvs does not sniff the network itself: it delegates to tshark, which ships "
@@ -438,7 +445,6 @@ _DE = {
     "{a} attack(s), {r} robbed": "{a} Angriff(e), {r} ausgeraubt",
     "Kills — alliance roster": "Kills — Allianzmitglieder",
     "Donation points — week": "Spendenpunkte — Woche",
-    "Donation points — today": "Spendenpunkte — heute",
     "Alliance roles (R1–R5)": "Allianzränge (R1–R5)",
     "THP — server ranking": "THP — Server-Rangliste",
     "Event ranking (camp battle)": "Event-Rangliste (Lagerschlacht)",
@@ -448,6 +454,20 @@ _DE = {
     "Desert Storm — team B": "Desert Storm — Team B",
     "VS points — duel total": "VS-Punkte — Duell gesamt",
     "VS points — per day": "VS-Punkte — pro Tag",
+    # Tabelle: Abschnitte und Kurzbezeichnungen
+    "Capture": "Aufzeichnung",
+    "Storms": "Stürme",
+    "Trains": "Züge",
+    "{r} / {n} ready": "{r} / {n} bereit",
+    "Donations · week": "Spenden · Woche",
+    "Roles R1–R5": "Ränge R1–R5",
+    "THP · server": "THP · Server",
+    "Camp battle": "Lagerschlacht",
+    "Canyon · team A": "Canyon · Team A",
+    "Canyon · team B": "Canyon · Team B",
+    "Desert · team A": "Desert · Team A",
+    "Desert · team B": "Desert · Team B",
+    "VS · day": "VS · Tag",
 }
 
 _T = {"fr": _FR, "de": _DE}

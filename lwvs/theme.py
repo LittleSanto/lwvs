@@ -40,6 +40,8 @@ class Palette:
     accent_hover: str
     accent_press: str
     accent_soft: str   # fond d'un badge ou d'une ligne selectionnee
+    ok_soft: str       # bandeau de section vert
+    warn_soft: str     # bandeau de section ambre
     on_accent: str
     ok: str
     warn: str
@@ -53,7 +55,8 @@ DARK = Palette(
     bg="#13161b", surface="#1a1e25", surface_alt="#222831", field="#0f1217",
     border="#2b323d", text="#e6e9ef", muted="#8b95a5",
     accent="#4c8dff", accent_hover="#649cff", accent_press="#3a7ae4",
-    accent_soft="#22304a", on_accent="#ffffff",
+    accent_soft="#22304a", ok_soft="#173a2c", warn_soft="#3a2c14",
+    on_accent="#ffffff",
     ok="#3ecf8e", warn="#f0a640", err="#ff6b6b",
     disabled_bg="#1d222a", disabled_fg="#59616e",
 )
@@ -63,7 +66,8 @@ LIGHT = Palette(
     bg="#eef1f5", surface="#ffffff", surface_alt="#f3f5f9", field="#ffffff",
     border="#dde3ec", text="#161a20", muted="#6b7482",
     accent="#2f6fed", accent_hover="#4480f5", accent_press="#255ccc",
-    accent_soft="#e4ecfd", on_accent="#ffffff",
+    accent_soft="#e4ecfd", ok_soft="#e3f4ec", warn_soft="#fbf0dc",
+    on_accent="#ffffff",
     ok="#128a5a", warn="#a86a0b", err="#cf3b3b",
     disabled_bg="#e9edf3", disabled_fg="#a5adbb",
 )
