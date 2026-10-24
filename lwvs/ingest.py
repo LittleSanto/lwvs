@@ -20,13 +20,19 @@ from .messages import (
     CMD_RANK,
     CMD_SEASON,
     CMD_SERVER_RANK,
+    CMD_METEOR_ALLIANCES,
+    CMD_METEOR_INFO,
+    CMD_METEOR_PLAYERS,
     CampRankMessage,
     GroupMessage,
     MembersMessage,
+    MeteorInfo,
+    MeteorRankMessage,
     RankMessage,
     SeasonMessage,
     ServerRankMessage,
     parse_message,
+    resolve_meteor_tower,
 )
 from .pipeline import DecodeStats, PayloadSaver, decode_source
 from .store import IngestCounters, Store
@@ -54,6 +60,9 @@ def ingest(
     snapshot_id = store.create_snapshot(source.description, note)
     stats = DecodeStats()
     counters = IngestCounters()
+    # Le dernier etat des tours vu : c'est lui qui dit a quelle tour
+    # appartient le classement suivant (cf. `resolve_meteor_tower`).
+    meteor_info: MeteorInfo | None = None
 
     for item in decode_source(source, stats, saver):
         if item.root is None:
@@ -90,6 +99,17 @@ def ingest(
             else:
                 counters.desert_messages += 1
                 counters.desert_rows += added
+        elif command == CMD_METEOR_INFO and isinstance(msg, MeteorInfo):
+            meteor_info = msg
+        elif (command in (CMD_METEOR_ALLIANCES, CMD_METEOR_PLAYERS)
+              and isinstance(msg, MeteorRankMessage)):
+            counters.meteor_messages += 1
+            tower = resolve_meteor_tower(msg, meteor_info)
+            if tower is None:
+                counters.meteor_unplaced += 1
+            else:
+                counters.meteor_rows += store.add_meteor_rank_message(
+                    snapshot_id, msg, tower)
         # Un commit par message : une transaction ouverte toute la capture
         # verrouille la base, et la GUI qui l'ouvre attend 5 s puis echoue.
         store.commit()

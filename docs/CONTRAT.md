@@ -58,6 +58,8 @@ le fil, elles sont exactes ou absentes. Le site ne doit pas les attendre.
 | `alliance_train` | **pas de `score`** : qui conduisait **un** train, et son VIP ou Guardian | non — un train |
 | `canyon_signup_a`, `canyon_signup_b` | **pas de `score`** : qui est **inscrit** au Canyon Storm dans l'équipe A / B, titulaire ou remplaçant | non — un état à l'instant de la capture |
 | `desert_signup_a`, `desert_signup_b` | **pas de `score`** : qui est **inscrit** au Desert Storm dans l'équipe A / B (20 titulaires + 10 remplaçants), titulaire ou remplaçant | non — un état à l'instant de la capture |
+| `meteor_alliance_rank_t1`, `meteor_alliance_rank_t2` | points d'une **alliance** sur **une** tour de l'événement Meteor — records par `alliance_id`, **pas de `uid`** | probablement sur la durée de l'événement — non vérifié |
+| `meteor_player_rank_t1`, `meteor_player_rank_t2` | points d'un **joueur** sur **une** tour de l'événement Meteor | probablement sur la durée de l'événement — non vérifié |
 
 D'autres modes apparaîtront. **Le site doit accepter un `mode` inconnu** en le
 stockant tel quel plutôt qu'en rejetant le document : de nouvelles statistiques
@@ -443,6 +445,46 @@ Ce qui diffère du Canyon :
   correspondance qu'il faut corriger, pas les rôles.**
 - Même limites que le Canyon : instantané, **ton alliance seulement**, deux
   captures = deux documents (garder le plus récent par `mode`).
+
+### `meteor_alliance_rank_t*` / `meteor_player_rank_t*` — l'événement Meteor
+
+Source : le **fil**. L'événement a **deux tours**, et chacune a son classement
+d'alliances (top 50) et son classement de joueurs (top 100), **tous serveurs
+confondus** (4 serveurs sur la capture du 24/10/2026). Quatre documents, un
+`mode` par tour et par classement.
+
+```json
+{
+  "exported_at": "2026-10-24T21:50:12+00:00",
+  "mode": "meteor_alliance_rank_t1",
+  "context": { "tower": 1, "tower_cfg_id": "511020" },
+  "records": [
+    { "rank": 1, "alliance_id": "e05e…", "alliance_name": "…", "alliance_abbr": "WaaW", "server_id": 1744, "score": 65636730 }
+  ]
+}
+```
+
+Le document joueurs a la forme habituelle (`rank`, `uid`, `player_name`,
+`score`) **plus** `alliance_abbr` et `server_id` par ligne : la liste mélange
+quatre serveurs.
+
+| champ | sens |
+|---|---|
+| `records[].alliance_id` | **la clé** d'un classement d'alliances, pour la même raison que `uid` (§3) : l'abréviation change. |
+| `records[].rank` | positionnel : la liste du jeu est triée par `score` décroissant, sans champ de rang. Ici c'est **le vrai rang du jeu** — la liste n'est filtrée sur personne. |
+| `context.tower` | `1` ou `2` : la position de la tour par `cfg_id` croissant. |
+| `context.tower_cfg_id` | l'identifiant de la tour dans le jeu, transporté tel quel. Rien ne dit qu'il est le même d'une édition de l'événement à l'autre. |
+
+**Ce que le site doit savoir :**
+
+- **Jamais filtré sur ton alliance**, même quand les autres documents le sont :
+  le classement *est* la compétition entre alliances et serveurs.
+- **Le message ne dit pas de quelle tour il est.** La tour vient de la ligne du
+  joueur qui capture (son rang et son score), comparée à l'état des tours que le
+  jeu envoie à l'ouverture de l'événement. Si la comparaison ne désigne pas
+  exactement une tour, le classement **n'est pas envoyé** — rien n'est deviné.
+- Instantané d'un classement qui bouge : deux captures = deux documents, garder
+  le plus récent par `mode`, ou en faire une série par `exported_at`.
 
 ---
 

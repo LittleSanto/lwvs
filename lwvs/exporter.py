@@ -41,7 +41,8 @@ __all__ = ["DATASETS", "COLUMNS", "Feed", "FEEDS", "FEEDS_BY_KEY", "OwnAlliance"
            "write_csv", "write_json", "write_doc", "build_records", "run_export",
            "STORM_MODES", "build_storm_records", "TRAIN_MODE", "build_train_records"]
 
-DATASETS = ("players", "group", "standing", "members", "camp", "server", "canyon", "desert")
+DATASETS = ("players", "group", "standing", "members", "camp", "server", "canyon", "desert",
+            "meteor_alliances", "meteor_players")
 
 #: Valeur speciale de --alliance : resout TON alliance par la regle du
 #: protocole (position du groupe == position de duelInfo) plutot que de figer
@@ -72,6 +73,14 @@ COLUMNS: dict[str, tuple[str, ...]] = {
     ),
     **{event: ("captured_at", "snapshot_id", "team", "uid", "name", "server_id",
                "role") for event in ("canyon", "desert")},
+    "meteor_alliances": (
+        "captured_at", "snapshot_id", "tower", "tower_cfg_id", "rank",
+        "alliance_id", "alliance_name", "alliance_abbr", "server_id", "score",
+    ),
+    "meteor_players": (
+        "captured_at", "snapshot_id", "tower", "tower_cfg_id", "rank", "uid",
+        "name", "alliance_abbr", "server_id", "score", "power",
+    ),
     "members": (
         "captured_at", "snapshot_id", "alliance_id", "uid", "name", "army_kill",
         "power", "alliance_rank", "today_progress", "weekly_progress",
@@ -169,6 +178,18 @@ def collect(
     alliance: str | None = None,
     snapshot: int | None = None,
 ) -> list[dict[str, Any]]:
+    if dataset in ("meteor_alliances", "meteor_players"):
+        # AUCUN filtre d'alliance, `mine` compris : le classement EST la
+        # competition entre alliances et serveurs. Filtre sur ton alliance, il
+        # ne mesurerait plus rien. `scope` est le numero de tour.
+        kind = "alliance" if dataset == "meteor_alliances" else "player"
+        tower = int(scope) if scope else None
+        rows = store.fetch_meteor_rank(kind, tower=tower, snapshot=snapshot)
+        named = "alliance_id" if kind == "alliance" else "uid"
+        label = "alliance_name" if kind == "alliance" else "name"
+        rows = [{**r, named: r["key"], label: r["name"]} for r in rows]
+        return [{c: row.get(c) for c in COLUMNS[dataset]} for row in rows]
+
     own_ids: list[str] | None = None
     if alliance and alliance.lower() == MINE:
         own_ids = resolve_own_alliance(store, snapshot).ids
@@ -332,6 +353,8 @@ _RECORD_METRICS: dict[str, tuple[str, str]] = {
     "camp": ("score", "camp_battle_rank"),
     "players": ("score", "vs_rank"),
     "server": ("hero_power", "thp_rank"),
+    "meteor_alliances": ("score", "meteor_alliance_rank"),
+    "meteor_players": ("score", "meteor_player_rank"),
 }
 
 #: (dataset, colonne de score) -> mode par defaut.
@@ -348,6 +371,8 @@ _METRIC_MODES: dict[tuple[str, str], str] = {
     ("camp", "score"): "camp_battle_rank",
     ("players", "score"): "vs_rank",
     ("server", "hero_power"): "thp_rank",
+    ("meteor_alliances", "score"): "meteor_alliance_rank",
+    ("meteor_players", "score"): "meteor_player_rank",
 }
 
 
@@ -484,6 +509,22 @@ FEEDS: tuple[Feed, ...] = (
         inherently_mine=True,
         hint="Idem, equipe B.",
     ),
+    *(Feed(
+        key=f"meteor_{what}_t{tower}",
+        label=f"Meteor — {what}, tower {tower}",
+        dataset=f"meteor_{what}",
+        command=command,
+        scope=str(tower),
+        # Un mode PAR TOUR, comme une equipe du Canyon : deux tours sous un
+        # meme mode empileraient deux classements dans la meme serie.
+        mode=f"meteor_{what[:-1]}_rank_t{tower}",
+        hint="Classement de l'evenement Meteor, une tour par flux, tous serveurs "
+             "confondus (jamais filtre sur ton alliance). La tour se reconnait "
+             "a TA ligne : ouvre l'evenement (etat des tours) AVANT ses "
+             "classements, sinon rien ne les rattache a une tour.",
+    ) for what, command in (("alliances", "meteorite.rank.alliance.info"),
+                            ("players", "meteorite.rank.person.info"))
+      for tower in (1, 2)),
     Feed(
         key="vs_total",
         label="VS points — duel total",
@@ -566,8 +607,19 @@ def build_records(
             " Choisis-en un avec --day N."
         )
 
+    towers = ({(r.get("tower"), r.get("tower_cfg_id")) for r in rows}
+              if dataset.startswith("meteor_") else set())
+    if len(towers) > 1:
+        raise ValueError(
+            "le format 'records' est un classement unique : il ne peut pas melanger"
+            f" les tours Meteor ({sorted(t for t, _ in towers)}). Choisis-en une"
+            " avec --scope N."
+        )
+
     if mode is None:
         mode = default_mode
+        if towers:
+            mode = f"{default_mode}_t{next(iter(towers))[0]}"
         if dataset == "players" and scope:
             # Noms descriptifs de CE qu'on exporte. On ne revendique pas
             # `weekly_rank` : la correspondance n'a pas pu etre etablie.
@@ -613,14 +665,32 @@ def build_records(
             )
         ctx["event"] = resolu.id
         ctx["event_label"] = resolu.label
+    if towers:
+        # Mesure, pas declaration : la tour vient de TA ligne du classement.
+        ctx["tower"], ctx["tower_cfg_id"] = next(iter(towers))
     if ctx:
         doc["context"] = ctx
+    if dataset == "meteor_alliances":
+        # Pas de `uid` : un classement d'ALLIANCES. Leur cle est `alliance_id`,
+        # pour la meme raison que `uid` -- l'abreviation change.
+        doc["records"] = [
+            {"rank": i + 1, "alliance_id": r.get("alliance_id"),
+             "alliance_name": r.get("alliance_name"),
+             "alliance_abbr": r.get("alliance_abbr"),
+             "server_id": r.get("server_id"), "score": r.get(score_key)}
+            for i, r in enumerate(ranked)
+        ]
+        return doc
+    # Joueurs Meteor : quatre serveurs dans la meme liste, d'ou l'alliance et le
+    # serveur par ligne.
+    extra = (("alliance_abbr", "server_id") if dataset == "meteor_players" else ())
     doc["records"] = [
             {
                 "rank": i + 1,
                 "uid": r.get("uid"),
                 "player_name": r.get("name"),
                 "score": r.get(score_key),
+                **{k: r.get(k) for k in extra},
             }
             for i, r in enumerate(ranked)
     ]

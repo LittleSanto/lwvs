@@ -199,6 +199,15 @@ payloads 198  decodes 188  echecs 10
 Les trois premiers viennent du **même message** (`al.rank`) : un écran capturé
 peut alimenter plusieurs classements.
 
+**Meteor** : ouvre l'événement, **puis** les classements de chaque tour
+(alliances et joueurs). Quatre fichiers, `lwvs_meteor_{alliances,players}_t{1,2}.json`.
+L'ordre compte : les classements ne disent pas de quelle tour ils sont, c'est
+ta ligne (rang, score) comparée à l'état des tours envoyé à l'ouverture qui le
+dit. Sans cet état, ou si la comparaison est ambiguë, le classement est écarté,
+pas deviné. Ces classements arrivent en **trames compressées longues** (flag
+`0xB8`, longueur sur 4 octets) : avant leur prise en charge, le découpage
+perdait la synchro et rendait illisible une bonne partie de la capture.
+
 ### Pourquoi la base n'est plus le défaut
 
 Elle n'a jamais servi à produire un export. Sa seule justification forte était

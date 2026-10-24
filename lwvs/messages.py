@@ -40,6 +40,14 @@ __all__ = [
     "CMD_DESERT_SIGNUP",
     "StormSignupRow",
     "StormSignupMessage",
+    "CMD_METEOR_INFO",
+    "CMD_METEOR_ALLIANCES",
+    "CMD_METEOR_PLAYERS",
+    "MeteorTower",
+    "MeteorInfo",
+    "MeteorRankRow",
+    "MeteorRankMessage",
+    "resolve_meteor_tower",
     "parse_message",
     "MAIL_DESERT_STORM",
     "MAIL_CANYON_STORM",
@@ -126,8 +134,14 @@ CMD_CANYON_SIGNUP = "quarantine.act.player.list"
 CMD_DESERT_SIGNUP = "dragon.assign.player.info"
 #: Idem pour le Desert Storm (`dragon.*` est le nom du jeu).
 CMD_DESERT_SIGNUP = "dragon.assign.player.info"
+#: Evenement Meteor : l'etat des tours, puis un classement d'alliances et un
+#: classement de joueurs PAR TOUR. Voir `parse_meteor_info`.
+CMD_METEOR_INFO = "meteorite.act.info"
+CMD_METEOR_ALLIANCES = "meteorite.rank.alliance.info"
+CMD_METEOR_PLAYERS = "meteorite.rank.person.info"
 VS_COMMANDS = (CMD_RANK, CMD_GROUP, CMD_SEASON, CMD_MEMBERS, CMD_CAMP_RANK,
-               CMD_SERVER_RANK, CMD_CANYON_SIGNUP, CMD_DESERT_SIGNUP)
+               CMD_SERVER_RANK, CMD_CANYON_SIGNUP, CMD_DESERT_SIGNUP,
+               CMD_METEOR_INFO, CMD_METEOR_ALLIANCES, CMD_METEOR_PLAYERS)
 
 
 # ---------------------------------------------------------------------------
@@ -677,6 +691,142 @@ def parse_desert_signup(body: Any) -> StormSignupMessage | None:
     return _parse_signup(body, "desert")
 
 
+# ---------------------------------------------------------------------------
+# meteorite.* -- l'evenement Meteor, par tour
+# ---------------------------------------------------------------------------
+#
+# Etabli le 24/10/2026 sur la capture `meteor` (classements des deux tours
+# ouverts a l'ecran) :
+#
+# * `meteorite.act.info` -> `meteorites[]` : UNE entree par tour, `cfgId`
+#   ("511020", "511021"), `personRank` / `count` = TON rang et TON score de
+#   joueur sur cette tour, `allianceRank` = le rang de ton alliance.
+# * `meteorite.rank.alliance.info` -> `data[]` : top 50 des alliances,
+#   `allianceId`, `name`, `abbr`, `serverId`, `score`.
+# * `meteorite.rank.person.info` -> `data[]` : top 100 des joueurs, `uid`,
+#   `name`, `abbr`, `serverId`, `power`, `score`.
+#
+# Les deux classements : liste triee par `score` decroissant, aucun champ de
+# rang -- il est POSITIONNEL. `rank` / `score` a la racine sont TA ligne :
+# `data[rank - 1].score == score` sur les 4 messages de la capture.
+#
+# LE PIEGE : un classement ne dit PAS de quelle tour il est. La seule chose
+# qui le relie a sa tour, c'est TA ligne : (rank, score) doit etre celle d'une
+# et une seule tour de `act.info` (rank seul pour les alliances, `act.info`
+# ne portant pas le score d'alliance). Sur la capture : joueur 11e / 2 715 290
+# -> 511020, 8e / 2 644 560 -> 511021 ; alliance 6e -> 511020, 7e -> 511021.
+# Zero ou deux tours candidates : le classement n'est PAS rattache. Deviner
+# rangerait le classement d'une tour sous l'autre sans que rien ne le montre.
+#
+# Le numero de tour (1, 2) est la position par `cfgId` croissant ; `cfgId` est
+# transporte tel quel. Ce qu'on NE lit PAS : `soldierNum`, `buildNum`,
+# `pointId`, `icon`, `praise`, les habillages (`headSkin*`, `chatBubble*`).
+
+
+@dataclass(frozen=True)
+class MeteorTower:
+    number: int             # 1, 2 : position par cfgId croissant
+    cfg_id: str
+    person_rank: int | None
+    person_score: int | None
+    alliance_rank: int | None
+    server_id: int | None
+
+
+@dataclass(frozen=True)
+class MeteorInfo:
+    towers: tuple[MeteorTower, ...] = ()
+
+
+def _cfg_order(cfg: str) -> tuple[int, str]:
+    return (int(cfg), cfg) if cfg.isdigit() else (1 << 62, cfg)
+
+
+def parse_meteor_info(body: Any) -> MeteorInfo | None:
+    if not isinstance(body, dict):
+        return None
+    entries = body.get("meteorites")
+    if not isinstance(entries, list):
+        return None
+    found = [(cfg, e) for e in entries if isinstance(e, dict)
+             for cfg in [_as_id(e.get("cfgId"))] if cfg]
+    found.sort(key=lambda ce: _cfg_order(ce[0]))
+    return MeteorInfo(towers=tuple(
+        MeteorTower(
+            number=i + 1,
+            cfg_id=cfg,
+            person_rank=_as_int(e.get("personRank")),
+            person_score=_as_int(e.get("count")),
+            alliance_rank=_as_int(e.get("allianceRank")),
+            server_id=_as_int(e.get("serverId")),
+        )
+        for i, (cfg, e) in enumerate(found)
+    ))
+
+
+@dataclass(frozen=True)
+class MeteorRankRow:
+    rank: int               # POSITIONNEL
+    key: str | None         # `uid` d'un joueur, `allianceId` d'une alliance
+    name: str | None
+    alliance_abbr: str | None
+    server_id: int | None
+    score: int | None
+    power: int | None = None    # joueurs seulement
+
+
+@dataclass(frozen=True)
+class MeteorRankMessage:
+    kind: str                       # "alliance" | "player"
+    self_rank: int | None
+    self_score: int | None
+    rows: tuple[MeteorRankRow, ...] = ()
+
+
+def _parse_meteor_rank(body: Any, kind: str) -> MeteorRankMessage | None:
+    if not isinstance(body, dict):
+        return None
+    entries = body.get("data")
+    if not isinstance(entries, list):
+        return None
+    key_field = "allianceId" if kind == "alliance" else "uid"
+    rows = tuple(
+        MeteorRankRow(
+            rank=i + 1,
+            key=_as_id(e.get(key_field)),
+            name=_as_str(e.get("name")),
+            alliance_abbr=_as_str(e.get("abbr")),
+            server_id=_as_int(e.get("serverId")),
+            score=_as_int(e.get("score")),
+            power=_as_int(e.get("power")) if kind == "player" else None,
+        )
+        for i, e in enumerate(entries) if isinstance(e, dict)
+    )
+    return MeteorRankMessage(kind=kind, self_rank=_as_int(body.get("rank")),
+                             self_score=_as_int(body.get("score")), rows=rows)
+
+
+def parse_meteor_alliances(body: Any) -> MeteorRankMessage | None:
+    return _parse_meteor_rank(body, "alliance")
+
+
+def parse_meteor_players(body: Any) -> MeteorRankMessage | None:
+    return _parse_meteor_rank(body, "player")
+
+
+def resolve_meteor_tower(msg: MeteorRankMessage,
+                         info: MeteorInfo | None) -> MeteorTower | None:
+    """La tour d'un classement, par TA ligne. None si zero ou plusieurs."""
+    if info is None or msg.self_rank is None:
+        return None
+    if msg.kind == "player":
+        hits = [t for t in info.towers if t.person_rank == msg.self_rank
+                and t.person_score == msg.self_score]
+    else:
+        hits = [t for t in info.towers if t.alliance_rank == msg.self_rank]
+    return hits[0] if len(hits) == 1 else None
+
+
 _PARSERS = {
     CMD_RANK: parse_rank,
     CMD_GROUP: parse_group,
@@ -686,6 +836,9 @@ _PARSERS = {
     CMD_SERVER_RANK: parse_server_rank,
     CMD_CANYON_SIGNUP: parse_canyon_signup,
     CMD_DESERT_SIGNUP: parse_desert_signup,
+    CMD_METEOR_INFO: parse_meteor_info,
+    CMD_METEOR_ALLIANCES: parse_meteor_alliances,
+    CMD_METEOR_PLAYERS: parse_meteor_players,
 }
 
 
