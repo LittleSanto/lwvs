@@ -511,7 +511,7 @@ FEEDS: tuple[Feed, ...] = (
     ),
     *(Feed(
         key=f"meteor_{what}_t{tower}",
-        label=f"Meteor — {what}, tower {tower}",
+        label=f"Meteor — {what}, round {tower}",
         dataset=f"meteor_{what}",
         command=command,
         scope=str(tower),
