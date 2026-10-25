@@ -45,13 +45,11 @@ _FR = {
     "capture starts.":
         "La première fois, l'interface et le port sont trouvés\n"
         "tout seuls avant le début de la capture.",
-    "Decoded fully": "Décodé en entier",
     "Share of payloads decoded down to their last byte.\nBelow 100 %, you are "
     "not decoding what you think.":
         "Part des messages décodés jusqu'au dernier octet.\n"
         "Sous 100 %, vous ne décodez pas ce que vous croyez.",
     "Network": "Réseau",
-    "Your alliance": "Votre alliance",
     "Day": "Jour",
     "Event": "Événement",
     "Day and event are declared by you,\nnot read from the game.":
@@ -77,10 +75,7 @@ _FR = {
     "Writes one file per ready line": "Écrit un fichier par ligne prête",
     "Double-click a ranking to save only that one":
         "Double-cliquez un classement pour n'enregistrer que lui",
-    "Data": "Données",
     "Messages": "Messages",
-    "Status / details": "État / détails",
-    "Rows": "Lignes",
     # Wireshark
     "Wireshark is required, and it could not be found":
         "Wireshark est requis et n'a pas été trouvé",
@@ -170,9 +165,6 @@ _FR = {
         "garde-fou : {exact}/{decoded} décodés jusqu'au dernier octet ({pct} %)",
     "below 100 %, you are not decoding what you think":
         "sous 100 %, vous ne décodez pas ce que vous croyez",
-    "Duel screen": "écran Duel",
-    "member list": "liste des membres",
-    "memory": "mémoire",
     "not identified — open the Duel screen or the member list once, it will be "
     "remembered":
         "non identifiée — ouvrez une fois l'écran Duel ou la liste des membres, "
@@ -181,10 +173,6 @@ _FR = {
     "known after the first capture": "connue après la première capture",
     "day": "jour",
     "not seen yet": "pas encore vu",
-    "no rows": "aucune ligne",
-    "message never received — reopen the screen":
-        "message jamais reçu — rouvrez l'écran",
-    "received, but no rows: please report": "reçu, mais aucune ligne : à signaler",
     "Destination folder": "Dossier de destination",
     "Name of the new event (e.g. S4 - Another event):":
         "Nom du nouvel événement (ex. S4 - Autre événement) :",
@@ -237,18 +225,32 @@ _FR = {
     "VS points — duel total": "Points VS — total du duel",
     "VS points — per day": "Points VS — par jour",
     # tableau : bandeaux et libelles courts
-    "Capture": "Capture",
-    "Storms": "Tempêtes",
     "Trains": "Trains",
-    "{r} / {n} ready": "{r} / {n} prêts",
+    "Global": "Global",
+    "Ranking": "Classements",
+    "Events": "Événements",
+    "Storm": "Tempête",
+    "Members": "Membres",
+    "received": "reçu",
+    "reopen the screen": "rouvrir l'écran",
+    "to report": "à signaler",
+    "no rows": "aucune ligne",
+    "{n} members · R4: {r4} · R5: {r5}": "{n} membres · R4 : {r4} · R5 : {r5}",
+    "Nothing captured yet: press Start capture, then open the screens in the game.":
+        "Rien de capturé pour l'instant : lancez la capture, puis ouvrez les écrans "
+        "dans le jeu.",
+    "players": "joueurs",
+    "* = team declared, not in the mail": "* = équipe déclarée, absente du mail",
+    "Week of {d}": "Semaine du {d}",
+    "{n} arrived": "{n} arrivé(s)",
+    "trains this week": "trains de la semaine",
     "Donations · week": "Dons · semaine",
-    "Roles R1–R5": "Rôles R1–R5",
     "THP · server": "THP · serveur",
     "Camp battle": "Bataille de camp",
-    "Meteor · alliances · tower 1": "Meteor · alliances · tour 1",
-    "Meteor · alliances · tower 2": "Meteor · alliances · tour 2",
-    "Meteor · players · tower 1": "Meteor · joueurs · tour 1",
-    "Meteor · players · tower 2": "Meteor · joueurs · tour 2",
+    "Meteor · alliances · round 1": "Meteor · alliances · tour 1",
+    "Meteor · alliances · round 2": "Meteor · alliances · tour 2",
+    "Meteor · players · round 1": "Meteor · joueurs · tour 1",
+    "Meteor · players · round 2": "Meteor · joueurs · tour 2",
     "Canyon · team A": "Canyon · équipe A",
     "Canyon · team B": "Canyon · équipe B",
     "Desert · team A": "Desert · équipe A",
@@ -271,13 +273,11 @@ _DE = {
     "capture starts.":
         "Beim ersten Mal werden Schnittstelle und Port\n"
         "automatisch gefunden, bevor die Aufzeichnung beginnt.",
-    "Decoded fully": "Vollständig dekodiert",
     "Share of payloads decoded down to their last byte.\nBelow 100 %, you are "
     "not decoding what you think.":
         "Anteil der bis zum letzten Byte dekodierten Nachrichten.\n"
         "Unter 100 % dekodierst du nicht, was du denkst.",
     "Network": "Netzwerk",
-    "Your alliance": "Deine Allianz",
     "Day": "Tag",
     "Event": "Event",
     "Day and event are declared by you,\nnot read from the game.":
@@ -303,10 +303,7 @@ _DE = {
     "Writes one file per ready line": "Schreibt eine Datei pro fertiger Zeile",
     "Double-click a ranking to save only that one":
         "Doppelklick auf eine Rangliste speichert nur diese",
-    "Data": "Daten",
     "Messages": "Nachrichten",
-    "Status / details": "Status / Details",
-    "Rows": "Zeilen",
     "Wireshark is required, and it could not be found":
         "Wireshark wird benötigt und wurde nicht gefunden",
     "lwvs does not sniff the network itself: it delegates to tshark, which ships "
@@ -394,9 +391,6 @@ _DE = {
         "Kontrolle: {exact}/{decoded} bis zum letzten Byte dekodiert ({pct} %)",
     "below 100 %, you are not decoding what you think":
         "unter 100 % dekodierst du nicht, was du denkst",
-    "Duel screen": "Duell-Bildschirm",
-    "member list": "Mitgliederliste",
-    "memory": "Gedächtnis",
     "not identified — open the Duel screen or the member list once, it will be "
     "remembered":
         "nicht erkannt — öffne einmal den Duell-Bildschirm oder die "
@@ -405,10 +399,6 @@ _DE = {
     "known after the first capture": "nach der ersten Aufzeichnung bekannt",
     "day": "Tag",
     "not seen yet": "noch nicht gesehen",
-    "no rows": "keine Zeilen",
-    "message never received — reopen the screen":
-        "Nachricht nie empfangen — Bildschirm erneut öffnen",
-    "received, but no rows: please report": "empfangen, aber keine Zeilen: bitte melden",
     "Destination folder": "Zielordner",
     "Name of the new event (e.g. S4 - Another event):":
         "Name des neuen Events (z. B. S4 - Anderes Event):",
@@ -459,18 +449,32 @@ _DE = {
     "VS points — duel total": "VS-Punkte — Duell gesamt",
     "VS points — per day": "VS-Punkte — pro Tag",
     # Tabelle: Abschnitte und Kurzbezeichnungen
-    "Capture": "Aufzeichnung",
-    "Storms": "Stürme",
     "Trains": "Züge",
-    "{r} / {n} ready": "{r} / {n} bereit",
+    "Global": "Allgemein",
+    "Ranking": "Ranglisten",
+    "Events": "Events",
+    "Storm": "Sturm",
+    "Members": "Mitglieder",
+    "received": "empfangen",
+    "reopen the screen": "Bildschirm erneut öffnen",
+    "to report": "bitte melden",
+    "no rows": "keine Zeilen",
+    "{n} members · R4: {r4} · R5: {r5}": "{n} Mitglieder · R4: {r4} · R5: {r5}",
+    "Nothing captured yet: press Start capture, then open the screens in the game.":
+        "Noch nichts aufgezeichnet: Aufzeichnung starten, dann die Bildschirme im "
+        "Spiel öffnen.",
+    "players": "Spieler",
+    "* = team declared, not in the mail": "* = Team angegeben, nicht im Mail",
+    "Week of {d}": "Woche vom {d}",
+    "{n} arrived": "{n} angekommen",
+    "trains this week": "Züge dieser Woche",
     "Donations · week": "Spenden · Woche",
-    "Roles R1–R5": "Ränge R1–R5",
     "THP · server": "THP · Server",
     "Camp battle": "Lagerschlacht",
-    "Meteor · alliances · tower 1": "Meteor · Allianzen · Turm 1",
-    "Meteor · alliances · tower 2": "Meteor · Allianzen · Turm 2",
-    "Meteor · players · tower 1": "Meteor · Spieler · Turm 1",
-    "Meteor · players · tower 2": "Meteor · Spieler · Turm 2",
+    "Meteor · alliances · round 1": "Meteor · Allianzen · Runde 1",
+    "Meteor · alliances · round 2": "Meteor · Allianzen · Runde 2",
+    "Meteor · players · round 1": "Meteor · Spieler · Runde 1",
+    "Meteor · players · round 2": "Meteor · Spieler · Runde 2",
     "Canyon · team A": "Canyon · Team A",
     "Canyon · team B": "Canyon · Team B",
     "Desert · team A": "Desert · Team A",

@@ -26,7 +26,7 @@ import threading
 import traceback
 import webbrowser
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -57,12 +57,24 @@ _WIRESHARK_URL = "https://www.wireshark.org/download.html"
 
 #: `OwnAlliance.source` est une valeur interne (tests et memoire la comparent) :
 #: on ne la traduit qu'a l'affichage.
-_SOURCE_LABELS = {"duel": "Duel screen", "roster": "member list",
-                  "memoire": "memory"}
 
-#: Les trois familles du tableau unique : la capture, puis les deux lectures
-#: de la boite mail du jeu.
-_GROUPS = ("grp:capture", "grp:storm", "grp:trains")
+#: Les sections du tableau, dans l'ordre d'affichage. Une section vide est
+#: masquee : l'ecran ne montre que ce qui a ete capture ou lu.
+_SECTIONS = (("grp:global", "🛡", "Global"), ("grp:vs", "⚔", "VS"),
+             ("grp:ranking", "🏆", "Ranking"), ("grp:events", "⛈", "Events"),
+             ("grp:trains", "🚂", "Trains"))
+
+#: Section et rang de chaque flux. Un flux absent d'ici va dans Events, apres
+#: ceux-ci (Meteor, et tout futur evenement).
+_FEED_PLACE = {
+    "roles": "grp:global",
+    "vs_total": "grp:vs", "vs_day": "grp:vs",
+    "thp": "grp:ranking", "kills": "grp:ranking", "dons_semaine": "grp:ranking",
+    "camp_battle": "grp:events",
+    "desert_a": "grp:events", "desert_b": "grp:events",
+    "canyon_a": "grp:events", "canyon_b": "grp:events",
+}
+_FEED_ORDER = list(_FEED_PLACE)
 
 #: Icone et libelle court de chaque flux a l'ecran. Le libelle long
 #: d'`exporter.FEEDS` reste celui de la CLI ; un flux absent d'ici garde le sien.
@@ -70,7 +82,7 @@ _GROUPS = ("grp:capture", "grp:storm", "grp:trains")
 _FEED_LOOK = {
     "kills": ("☠", "Kills"),
     "dons_semaine": ("⛃", "Donations · week"),
-    "roles": ("♛", "Roles R1–R5"),
+    "roles": ("♛", "Members"),
     "thp": ("⚡", "THP · server"),
     "camp_battle": ("⚑", "Camp battle"),
     "canyon_a": ("⛰", "Canyon · team A"),
@@ -79,10 +91,10 @@ _FEED_LOOK = {
     "desert_b": ("☀", "Desert · team B"),
     "vs_total": ("⚔", "VS · total"),
     "vs_day": ("⚔", "VS · day"),
-    "meteor_alliances_t1": ("☄", "Meteor · alliances · tower 1"),
-    "meteor_alliances_t2": ("☄", "Meteor · alliances · tower 2"),
-    "meteor_players_t1": ("☄", "Meteor · players · tower 1"),
-    "meteor_players_t2": ("☄", "Meteor · players · tower 2"),
+    "meteor_alliances_t1": ("☄", "Meteor · alliances · round 1"),
+    "meteor_alliances_t2": ("☄", "Meteor · alliances · round 2"),
+    "meteor_players_t1": ("☄", "Meteor · players · round 1"),
+    "meteor_players_t2": ("☄", "Meteor · players · round 2"),
 }
 
 
@@ -90,6 +102,11 @@ _FEED_LOOK = {
 # installe), il suit un repertoire courant imprevisible -- la base atterrit
 # n'importe ou, et le fichier de preferences avec elle puisqu'il se deduit
 # d'elle. La GUI ancre donc les deux dans le repertoire de configuration.
+def _short_date(iso: str) -> str:
+    """« 2026-10-23 » -> « 23/10 » : l'annee n'apporte rien sur une tuile."""
+    return f"{iso[8:10]}/{iso[5:7]}" if len(iso) >= 10 else iso
+
+
 def _default_db() -> str:
     home = identity.home()
     try:
@@ -208,6 +225,7 @@ class App:
         #: preference ne sert qu'aux postes ou le jeu est installe ailleurs.
         self.storm_db: str | None = self.prefs.get("storm_game_db") or None
         self._storm_rows: list[dict[str, Any]] = []
+        self._tiles: dict[str, dict[str, Any]] = {}
         self._train_rows: list[dict[str, Any]] = []
         #: Ecran affiche et journal deplie : survivent au changement de theme.
         self._page = "home"
@@ -240,6 +258,7 @@ class App:
         self.status_var = tk.StringVar(value=t("ready"))
         self.guard_var = tk.StringVar(value=t("no capture yet"))
         self.alliance_var = tk.StringVar(value="")
+        self.roster_var = tk.StringVar(value="")
         self.mine_var = tk.BooleanVar(value=bool(self.prefs.get("mine", True)))
         self.day_var = tk.StringVar(value=str(self.prefs.get("declare_day", "") or ""))
         self.event_var = tk.StringVar(value=self.prefs.get("event", ""))
@@ -436,28 +455,7 @@ class App:
                       + t("The first time, the interface and port are found by\n"
                           "themselves before the capture starts."), pal, fonts)
 
-        tiles = tk.Frame(page, background=pal.bg)
-        tiles.pack(fill="x", pady=(16, 12))
-        for i in range(3):
-            tiles.columnconfigure(i, weight=1, uniform="tile")
-        guard = self._tile(tiles, 0, t("Decoded fully"))
-        # Le garde-fou est LE chiffre qui dit si on decode ce qu'on croit : il
-        # merite une tuile, pas une ligne de texte gris perdue dans le journal.
-        self.guard_bar = ttk.Progressbar(guard, style="Ok.Horizontal.TProgressbar",
-                                         mode="determinate", maximum=100, value=0)
-        self.guard_bar.pack(fill="x", pady=(2, 5))
-        theme.label(guard, pal, fonts, kind="muted", textvariable=self.guard_var,
-                    wraplength=220).pack(fill="x")
-        theme.Tooltip(self.guard_bar,
-                      t("Share of payloads decoded down to their last byte.\n"
-                        "Below 100 %, you are not decoding what you think."),
-                      pal, fonts)
-        net = self._tile(tiles, 1, t("Network"))
-        theme.label(net, pal, fonts, kind="muted", textvariable=self.net_var,
-                    wraplength=220).pack(fill="x")
-        ally = self._tile(tiles, 2, t("Your alliance"))
-        theme.label(ally, pal, fonts, kind="muted", textvariable=self.alliance_var,
-                    wraplength=220).pack(fill="x")
+        self._build_banner(page)
 
         # La barre d'actions est posee AVANT le tableau : `pack` sert dans
         # l'ordre, et un tableau extensible pose d'abord ne lui laisserait rien.
@@ -507,48 +505,151 @@ class App:
                       + "   ·   Ctrl+E",
                       pal, fonts)
 
-        self.tree_holder = tk.Frame(page, background=pal.surface, highlightthickness=1,
-                                    highlightbackground=pal.border,
-                                    highlightcolor=pal.border)
-        self.tree_holder.pack(fill="both", expand=True)
-        self.tree = ttk.Treeview(self.tree_holder, columns=("vu", "etat", "lignes"),
-                                 show="tree headings", height=7, selectmode="browse")
-        self.tree.heading("#0", text=t("Data"), anchor="w")
-        self.tree.heading("vu", text=t("Messages"), anchor="center")
-        self.tree.heading("etat", text=t("Status / details"), anchor="w")
-        self.tree.heading("lignes", text=t("Rows"), anchor="e")
-        self.tree.column("#0", width=280, minwidth=180)
-        self.tree.column("vu", width=80, anchor="center", stretch=False)
-        self.tree.column("etat", width=300, anchor="w")
-        self.tree.column("lignes", width=60, anchor="e", stretch=False)
-        # Trois etats d'une ligne, trois couleurs : prete (vert), en attente
-        # (gris), a signaler (ambre). Le symbole en tete dit la meme chose.
-        for tag, colour in (("ok", pal.ok), ("warn", pal.warn), ("muted", pal.muted)):
-            self.tree.tag_configure(tag, foreground=colour)
-        # Chaque famille est un bandeau colore : on retrouve sa section d'un coup d'oeil.
-        for iid, text, bg, fg in zip(
-                _GROUPS,
-                ("◉  " + t("Capture"), "⛈  " + t("Storms"), "🚂  " + t("Trains")),
-                (pal.accent_soft, pal.warn_soft, pal.ok_soft),
-                (pal.accent, pal.warn, pal.ok)):
-            self.tree.tag_configure(iid, background=bg, foreground=fg, font=fonts.bold)
-            self.tree.insert("", "end", iid=iid, text=text, open=True, tags=(iid,))
-        scroll = ttk.Scrollbar(self.tree_holder, style="Slim.Vertical.TScrollbar",
-                               command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scroll.set)
-        self.tree.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
-        self.tree.bind("<<TreeviewSelect>>", lambda _e: self._sync_buttons())
-        self.tree.bind("<Double-1>", lambda _e: self._export())
-
+        self._build_tiles(page)
         self._build_log(page)
 
-    def _tile(self, parent: tk.Frame, column: int, title: str) -> tk.Frame:
-        outer, body = theme.card(parent, self.pal, self.fonts, title)
-        outer.grid(row=0, column=column, sticky="nsew",
-                   padx=(0 if column == 0 else 6, 0 if column == 2 else 6))
-        return body
+    def _build_banner(self, page: tk.Frame) -> None:
+        """Bandeau du haut : qui est ton alliance, et si la capture decode bien."""
+        pal, fonts = self.pal, self.fonts
+        banner = tk.Frame(page, background=pal.surface, highlightthickness=1,
+                          highlightbackground=pal.border, highlightcolor=pal.border)
+        banner.pack(fill="x", pady=(16, 12))
+        tk.Label(banner, text="🛡", background=pal.surface, foreground=pal.accent,
+                 font=(fonts.title[0], 24)).pack(side="left", padx=(16, 12), pady=10)
+        # Le garde-fou reste visible : c'est LE chiffre qui dit si on decode ce
+        # qu'on croit. Discret, mais toujours la.
+        health = tk.Frame(banner, background=pal.surface, width=230)
+        health.pack(side="right", fill="y", padx=16, pady=10)
+        health.pack_propagate(False)
+        self.guard_bar = ttk.Progressbar(health, style="Ok.Horizontal.TProgressbar",
+                                         mode="determinate", maximum=100, value=0)
+        self.guard_bar.pack(fill="x", pady=(4, 4))
+        theme.Tooltip(self.guard_bar,
+                      t("Share of payloads decoded down to their last byte.\n"
+                        "Below 100 %, you are not decoding what you think."),
+                      pal, fonts)
+        theme.label(health, pal, fonts, kind="muted", textvariable=self.guard_var,
+                    wraplength=230).pack(fill="x")
+        theme.label(health, pal, fonts, kind="muted", textvariable=self.net_var,
+                    wraplength=230).pack(fill="x")
+        who = tk.Frame(banner, background=pal.surface)
+        who.pack(side="left", fill="x", expand=True, pady=10)
+        tk.Label(who, textvariable=self.alliance_var, background=pal.surface,
+                 foreground=pal.text, font=fonts.title, anchor="w", justify="left",
+                 wraplength=420).pack(fill="x")
+        theme.label(who, pal, fonts, kind="muted", textvariable=self.roster_var
+                    ).pack(fill="x")
 
+    def _build_tiles(self, page: tk.Frame) -> None:
+        """Zone des tuiles, defilante : une rangee par section, une tuile par donnee."""
+        pal = self.pal
+        self._selected: str | None = None
+        self._cols = 0
+        self.tiles_holder = tk.Frame(page, background=pal.bg)
+        self.tiles_holder.pack(fill="both", expand=True)
+        canvas = tk.Canvas(self.tiles_holder, background=pal.bg, highlightthickness=0,
+                           borderwidth=0)
+        scroll = ttk.Scrollbar(self.tiles_holder, style="Slim.Vertical.TScrollbar",
+                               command=canvas.yview)
+        canvas.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        self.tiles_area = tk.Frame(canvas, background=pal.bg)
+        window = canvas.create_window(0, 0, window=self.tiles_area, anchor="nw")
+        self.tiles_area.bind("<Configure>", lambda _e: canvas.configure(
+            scrollregion=canvas.bbox("all")))
+
+        def resized(event) -> None:
+            canvas.itemconfigure(window, width=event.width)
+            cols = max(1, event.width // 215)
+            if cols != self._cols:
+                self._cols = cols
+                self._render_tiles()
+        canvas.bind("<Configure>", resized)
+        # La molette ne defile que si le pointeur est sur les tuiles.
+        canvas.bind("<Enter>", lambda _e: canvas.bind_all(
+            "<MouseWheel>", lambda e: canvas.yview_scroll(-e.delta // 120, "units")))
+        canvas.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
+
+    def _put_tile(self, key: str, section: str, order: float, icon: str, name: str,
+                  big: str, state: str, tag: str, tip: str = "",
+                  detail: str = "") -> None:
+        self._tiles[key] = dict(section=section, order=order, icon=icon, name=name,
+                                big=big, state=state, tag=tag, tip=tip, detail=detail)
+
+    def _drop_tiles(self, prefix: str) -> None:
+        for key in [k for k in self._tiles if k.startswith(prefix)]:
+            del self._tiles[key]
+        if self._selected and self._selected not in self._tiles:
+            self._selected = None
+
+    def _render_tiles(self) -> None:
+        """Redessine toutes les tuiles. Peu nombreuses : plus simple que les patcher."""
+        pal, fonts = self.pal, self.fonts
+        for child in self.tiles_area.winfo_children():
+            child.destroy()
+        colours = {"ok": pal.ok, "warn": pal.warn, "muted": pal.muted, "": pal.accent}
+        cols = max(1, self._cols)
+        shown = False
+        for section, icon, title in _SECTIONS:
+            tiles = sorted((v["order"], k) for k, v in self._tiles.items()
+                           if v["section"] == section)
+            if not tiles:
+                continue
+            shown = True
+            tk.Label(self.tiles_area, text=f"{icon}  {t(title)}", background=pal.bg,
+                     foreground=pal.text, font=fonts.bold, anchor="w"
+                     ).pack(fill="x", pady=(10, 6))
+            grid = tk.Frame(self.tiles_area, background=pal.bg)
+            grid.pack(fill="x")
+            for c in range(cols):
+                grid.columnconfigure(c, weight=1, uniform="tile")
+            for i, (_order, key) in enumerate(tiles):
+                spec = self._tiles[key]
+                colour = colours.get(spec["tag"], pal.accent)
+                chosen = key == self._selected
+                tile = tk.Frame(grid, background=pal.surface, cursor="hand2",
+                                highlightthickness=2 if chosen else 1,
+                                highlightbackground=pal.accent if chosen else pal.border,
+                                highlightcolor=pal.accent if chosen else pal.border)
+                tile.grid(row=i // cols, column=i % cols, sticky="nsew",
+                          padx=(0, 8), pady=(0, 8))
+                tk.Frame(tile, background=colour, height=3).pack(fill="x")
+                icon_lbl = tk.Label(tile, text=spec["icon"], background=pal.surface,
+                                    foreground=colour, font=(fonts.title[0], 20))
+                icon_lbl.pack(side="left", padx=(10, 6), pady=8)
+                text = tk.Frame(tile, background=pal.surface)
+                text.pack(side="left", fill="x", expand=True, pady=6, padx=(0, 8))
+                parts = [
+                    tk.Label(text, text=spec["name"], background=pal.surface,
+                             foreground=pal.muted, font=fonts.small, anchor="w",
+                             justify="left", wraplength=135),
+                    tk.Label(text, text=spec["big"], background=pal.surface,
+                             foreground=pal.text, font=fonts.title, anchor="w"),
+                    tk.Label(text, text=spec["state"], background=pal.surface,
+                             foreground=colour, font=fonts.small, anchor="w"),
+                ]
+                if spec["detail"]:
+                    parts.append(tk.Label(text, text=spec["detail"], background=pal.surface,
+                                          foreground=pal.muted, font=fonts.small,
+                                          anchor="w", justify="left", wraplength=135))
+                for part in parts:
+                    part.pack(fill="x")
+                for widget in (tile, icon_lbl, text, *parts):
+                    widget.bind("<Button-1>", lambda _e, k=key: self._select_tile(k))
+                    widget.bind("<Double-1>", lambda _e, k=key: self._export())
+                    if spec["tip"]:
+                        theme.Tooltip(widget, spec["tip"], pal, fonts)
+        if not shown:
+            theme.label(self.tiles_area, pal, fonts, kind="muted",
+                        text=t("Nothing captured yet: press Start capture, then open "
+                               "the screens in the game."),
+                        wraplength=500).pack(pady=40)
+
+    def _select_tile(self, key: str) -> None:
+        self._selected = key
+        self._render_tiles()
+        self._sync_buttons()
     def _build_log(self, page: tk.Frame) -> None:
         """Journal replie sous le tableau : utile quand ca casse, pas a chaque clic.
 
@@ -585,7 +686,7 @@ class App:
     def _toggle_log(self, show: bool | None = None) -> None:
         self._log_open = (not self._log_open) if show is None else show
         if self._log_open:
-            self.log_panel.pack(side="bottom", fill="x", before=self.tree_holder)
+            self.log_panel.pack(side="bottom", fill="x", before=self.tiles_holder)
         else:
             self.log_panel.pack_forget()
         self.log_btn.configure(text=t("Hide log") if self._log_open else t("Show log"))
@@ -603,10 +704,6 @@ class App:
                              command=self._refresh_mail)
         refresh.pack(side="left", padx=(4, 0))
         theme.Tooltip(refresh, t("Read the game's mailbox again"), self.pal, self.fonts)
-
-    def _group_state(self, group: str, text: str) -> None:
-        """Le resume d'une famille s'affiche sur sa ligne de titre."""
-        self.tree.set(group, "etat", text)
 
     # -- ecran 2 : reglages -----------------------------------------------
     def _build_settings_page(self, page: tk.Frame) -> None:
@@ -1029,8 +1126,9 @@ class App:
             self._storm_listed(msg.payload)
         elif msg.kind == "storm_unavailable":
             self._storm_rows = []
-            self.tree.delete(*self.tree.get_children("grp:storm"))
-            self._group_state("grp:storm", f"⚠ {msg.payload}")
+            self._drop_tiles("storm:")
+            self._render_tiles()
+            self._say(f"⚠ {msg.payload}", "err")
             self._sync_buttons()
         elif msg.kind in ("storm_done", "train_done"):
             self._sync_buttons()
@@ -1039,8 +1137,8 @@ class App:
             self._trains_listed(msg.payload)
         elif msg.kind == "train_unavailable":
             self._train_rows = []
-            self.tree.delete(*self.tree.get_children("grp:trains"))
-            self._group_state("grp:trains", f"⚠ {msg.payload}")
+            self._drop_tiles("train:")
+            self._render_tiles()
             self._sync_buttons()
 
     def _guard(self, exact: int, decoded: int) -> None:
@@ -1087,17 +1185,32 @@ class App:
 
     # -- tableau des flux -------------------------------------------------
     def _update_seen(self, commands: dict[str, int]) -> None:
+        # En pleine capture, la base n'a pas encore la nouvelle photo : une tuile
+        # apparait des que son message passe, et se remplit a l'arret.
+        changed = False
         for feed in exporter.FEEDS:
-            n = commands.get(feed.command, 0)
-            if not n:
-                continue
-            for item in self.tree.get_children("grp:capture"):
-                if item == f"feed:{feed.key}" or item.startswith(f"feed:{feed.key}:"):
-                    self.tree.set(item, "vu", str(n))
+            if commands.get(feed.command) and not any(
+                    e["feed"] is feed for e in self._rows.values()):
+                self._feed_tile(feed, None, f"feed:{feed.key}", commands[feed.command],
+                                "●  " + t("received"), "", 0)
+                changed = True
+        if changed:
+            self._render_tiles()
+
+    def _feed_tile(self, feed: exporter.Feed, day: int | None, key: str,
+                   seen: int, state: str, tag: str, count: int) -> None:
+        icon, short = _FEED_LOOK.get(feed.key, ("•", feed.label))
+        order = _FEED_ORDER.index(feed.key) if feed.key in _FEED_ORDER else len(_FEED_ORDER)
+        tip = t(feed.label) + (f"\n{t('Messages')} : {seen}" if seen else "")
+        self._put_tile(key, _FEED_PLACE.get(feed.key, "grp:events"), order + (day or 0) / 100,
+                       icon, t(short) + (f" {day}" if day is not None else ""),
+                       str(count) if count else "…", state, tag, tip)
+        self._rows[key] = {"feed": feed, "day": day, "count": count}
 
     def _refresh_feeds(self) -> None:
-        self.tree.delete(*self.tree.get_children("grp:capture"))
+        self._drop_tiles("feed:")
         self._rows: dict[str, dict[str, Any]] = {}
+        self.roster_var.set("")
 
         snapshot = self.snapshot_id or self._latest_snapshot()
 
@@ -1105,9 +1218,7 @@ class App:
             if self.mine_var.get() and snapshot is not None:
                 try:
                     own = exporter.resolve_own_alliance(store, snapshot)
-                    self.alliance_var.set(
-                        f"{own.label}  ·  "
-                        + t(_SOURCE_LABELS.get(own.source, own.source)))
+                    self.alliance_var.set(own.label)
                 except ValueError:
                     self.alliance_var.set(
                         "⚠ " + t("not identified — open the Duel screen or the "
@@ -1123,12 +1234,10 @@ class App:
                 days = [None]
                 if feed.per_day and snapshot is not None:
                     days = self._days(store, snapshot) or [None]
-                icon, short = _FEED_LOOK.get(feed.key, ("•", feed.label))
                 for day in days:
                     key = f"feed:{feed.key}" + (f":{day}" if day is not None else "")
-                    label = f"{icon}  {t(short)}" + (f" {day}" if day is not None else "")
                     seen = self._seen.get(feed.command, 0)
-                    count, state, tag = 0, "◷  " + t("not seen yet"), "muted"
+                    count, state, tag = 0, "●  " + t("received"), ""
                     if snapshot is not None:
                         try:
                             rows = exporter.collect(
@@ -1136,15 +1245,17 @@ class App:
                                 alliance=alliance, snapshot=snapshot)
                             count = len(rows)
                             state, tag = self._etat(count, seen)
+                            if feed.key == "roles" and rows:
+                                ranks = [r.get("alliance_rank") for r in rows]
+                                self.roster_var.set(
+                                    t("{n} members · R4: {r4} · R5: {r5}").format(
+                                        n=len(rows), r4=ranks.count(4), r5=ranks.count(5)))
                         except ValueError as exc:
-                            state, tag = str(exc)[:60], "warn"
-                    self.tree.insert("grp:capture", "end", iid=key, text=label,
-                                     tags=(tag,) if tag else (),
-                                     values=(seen or "", state, count or ""))
-                    self._rows[key] = {"feed": feed, "day": day, "count": count}
-        ready = sum(1 for r in self._rows.values() if r["count"])
-        self._group_state("grp:capture", t("{r} / {n} ready").format(
-            r=ready, n=len(self._rows)))
+                            state, tag = "⚠  " + str(exc)[:60], "warn"
+                    # Ni donnee ni message recu : rien a montrer.
+                    if count or seen:
+                        self._feed_tile(feed, day, key, seen, state, tag, count)
+        self._render_tiles()
         self._sync_buttons()
 
     def _etat(self, count: int, seen: int) -> tuple[str, str]:
@@ -1165,8 +1276,8 @@ class App:
         if not self._seen:
             return "◷  " + t("no rows"), "muted"
         if not seen:
-            return "◷  " + t("message never received — reopen the screen"), "muted"
-        return "⚠  " + t("received, but no rows: please report"), "warn"
+            return "◷  " + t("reopen the screen"), "muted"
+        return "⚠  " + t("to report"), "warn"
 
     def _active_db(self) -> str:
         return self.db_path if self._keep.get() else str(self._temp_db)
@@ -1217,10 +1328,10 @@ class App:
 
     # -- export -----------------------------------------------------------
     def _export(self) -> None:
-        sel = self.tree.selection()
-        if not sel or not self._rows.get(sel[0], {}).get("count"):
+        sel = self._selected
+        if not sel or not self._rows.get(sel, {}).get("count"):
             return
-        entry = self._rows[sel[0]]
+        entry = self._rows[sel]
         feed, day = entry["feed"], entry["day"]
         suffix = f"_j{day}" if day is not None else ""
         path = filedialog.asksaveasfilename(
@@ -1423,14 +1534,11 @@ class App:
         try:
             since = storm.since_ms(text)
         except ValueError as exc:
-            for group in ("grp:storm", "grp:trains"):
-                self._group_state(group, f"⚠ {exc}")
+            self._say(f"⚠ {exc}", "err")
             return
         self.prefs["mail_since"] = text.strip()
         _save_prefs(self.db_path, self.prefs)
         db = self.storm_db
-        for group in ("grp:storm", "grp:trains"):
-            self._group_state(group, t("reading the game's mailbox…"))
 
         def work():
             try:
@@ -1455,18 +1563,28 @@ class App:
     def _storm_listed(self, payload) -> None:
         rows, n, dups, bad = payload
         self._storm_rows = rows
-        self.tree.delete(*self.tree.get_children("grp:storm"))
-        for i, r in enumerate(reversed(rows)):          # le plus recent en haut
-            kind = "⛰  Canyon" if r["kind"] == "canyon_storm" else "☀  Desert"
-            team = (t("team") + " " + (r["team"] or "?")
-                    + (f" ({t('declared')})" if r["declared"] else ""))
-            result = {"win": t("win"), "loss": t("loss")}.get(r["result"], r["result"])
-            self.tree.insert("grp:storm", "end", iid=f"storm:{i}",
-                             text=f"{kind}  ·  {r['date']}",
-                             tags=("muted",) if r["result"] == "loss" else (),
-                             values=("", f"{team}  ·  {r['side']}  vs  "
-                                         f"{r['opponents']}  ·  {result}",
-                                     r["players"]))
+        self._drop_tiles("storm:")
+        # Une tuile par journee et par type : les deux equipes d'un meme soir
+        # se lisent ensemble, le detail de chaque bataille est dans la tuile.
+        days: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for r in rows:
+            days.setdefault((r["date"], r["kind"]), []).append(r)
+        for i, ((day, kind), battles) in enumerate(sorted(days.items(), reverse=True)):
+            canyon = kind == "canyon_storm"
+            wins = sum(1 for r in battles if r["result"] == "win")
+            losses = sum(1 for r in battles if r["result"] == "loss")
+            detail = "\n".join(
+                f"{r['team'] or '?'}{'*' if r['declared'] else ''} · "
+                + {"win": "✓", "loss": "✗"}.get(r["result"], "?")
+                + f" vs {r['opponents']}"
+                for r in sorted(battles, key=lambda r: r["team"] or ""))
+            self._put_tile(
+                f"storm:{i}", "grp:events", 100 + i, "⛰" if canyon else "☀",
+                f"{'Canyon' if canyon else 'Desert'} · {_short_date(day)}",
+                str(sum(r["players"] for r in battles)),
+                f"✓ {wins}   ✗ {losses}", "ok" if wins else "muted",
+                t("players") + "\n" + t("* = team declared, not in the mail"),
+                detail)
         state = t("{n} battle(s) in the period").format(n=len(rows))
         if dups:
             state += "  ·  " + t("{n} duplicate mail(s) merged").format(n=dups)
@@ -1477,22 +1595,36 @@ class App:
                                  "evening = A, early afternoon = B")
         if not rows:
             state = t("none in the period — widen « Mail since »")
-        self._group_state("grp:storm", state)
+        self._say(t("Storm") + " : " + state)
+        self._render_tiles()
         self._sync_buttons()
 
     def _trains_listed(self, payload) -> None:
         rows, n, bad = payload
         self._train_rows = rows
-        self.tree.delete(*self.tree.get_children("grp:trains"))
-        for i, r in enumerate(reversed(rows)):          # le plus recent en haut
-            label = f"🚂  {r['date']}  ·  {r['departed']} UTC"
-            if r["purchased"]:
-                label += "  ·  " + t("purchased")
-            trip = (t("{a} attack(s), {r} robbed").format(a=r["attacks"], r=r["robbed"])
-                    if r["arrived"] else t("en route"))
-            self.tree.insert("grp:trains", "end", iid=f"train:{i}", text=label,
-                             tags=() if r["arrived"] else ("muted",),
-                             values=("", f"{r['escort']}  ·  {trip}", r["passengers"]))
+        self._drop_tiles("train:")
+        # Une tuile par semaine (lundi a dimanche) : un train par jour ferait
+        # trente tuiles sur un mois.
+        weeks: dict[date, list[dict[str, Any]]] = {}
+        for r in rows:
+            d = date.fromisoformat(r["date"])
+            weeks.setdefault(d - timedelta(days=d.weekday()), []).append(r)
+        for i, (monday, runs) in enumerate(sorted(weeks.items(), reverse=True)):
+            arrived = sum(1 for r in runs if r["arrived"])
+            on_way = len(runs) - arrived
+            self._put_tile(
+                f"train:{i}", "grp:trains", i, "🚂",
+                t("Week of {d}").format(d=_short_date(monday.isoformat())),
+                str(len(runs)),
+                "✓ " + t("{n} arrived").format(n=arrived)
+                + (f"   ◷ {on_way}" if on_way else ""),
+                "ok" if arrived else "muted",
+                t("trains this week"),
+                t("{a} attack(s), {r} robbed").format(
+                    a=sum(r["attacks"] or 0 for r in runs),
+                    r=sum(r["robbed"] or 0 for r in runs))
+                + (f"\n{t('{n} purchased').format(n=sum(1 for r in runs if r['purchased']))}"
+                   if any(r["purchased"] for r in runs) else ""))
         state = t("{n} train(s) in the period").format(n=len(rows))
         bought = sum(1 for r in rows if r["purchased"])
         if bought:
@@ -1501,7 +1633,8 @@ class App:
             state += "  ·  " + t("{n} unreadable").format(n=bad)
         if not rows:
             state = t("none in the period — widen « Mail since »")
-        self._group_state("grp:trains", state)
+        self._say(t("Trains") + " : " + state)
+        self._render_tiles()
         self._sync_buttons()
 
     def _storm_run(self, folder: str, url: str | None, token: str | None) -> None:
